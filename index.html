@@ -1,0 +1,83 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>WorkTracker PRO — Автоматизация учета рабочего времени и персонала</title>
+    <meta name="description" content="WorkTracker PRO — профессиональная система автоматизации учета рабочего времени, расчета зарплаты и управления графиками смен для бизнеса. Повысьте эффективность вашей команды.">
+    <meta name="keywords" content="учет рабочего времени, автоматизация бизнеса, табель учета, расчет зарплаты, управление персоналом, мониторинг смен, SaaS для бизнеса">
+    
+    <!-- JSON-LD Schema -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "WorkTracker PRO",
+      "applicationCategory": "BusinessApplication",
+      "description": "Профессиональная система автоматизации учета рабочего времени, расчета зарплаты и управления графиками смен для бизнеса.",
+      "operatingSystem": "Web",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "RUB"
+      }
+    }
+    </script>
+    
+    <!-- PWA Manifest - Используем относительный путь для GitHub Pages -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2693/2693507.png">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+        
+        @media print {
+            @page { size: A4 landscape; margin: 5mm; }
+            .no-print { display: none !important; }
+            body { background-color: white !important; }
+        }
+
+        /* Оптимизация для мобильных устройств (PWA) */
+        @media all and (display-mode: standalone) {
+            body { padding-top: env(safe-area-inset-top); }
+        }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #e2e8f0;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #cbd5e1;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+<script>
+  // Регистрация сервис-воркера с относительным путем
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration failed: ', err));
+    });
+  }
+</script>
+</body>
+</html>

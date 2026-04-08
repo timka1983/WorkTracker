@@ -1,0 +1,2504 @@
+
+import React, { useState, useEffect } from 'react';
+import { Organization, PlanType, Plan, PromoCode, User, UserRole } from '../types';
+import { db, supabase } from '../lib/supabase';
+import { STORAGE_KEYS } from '../constants';
+import { Users, Building2, CreditCard, Activity, ShieldCheck, Search, RefreshCw, ExternalLink, Settings2, X, Check, Plus, LayoutGrid, Zap, Briefcase, Save, Camera, Moon, BarChart3, Megaphone, Ticket, Trash2, Database, AlertCircle, PlayCircle, Bell, MessageSquare, History, HelpCircle } from 'lucide-react';
+import { SupportChat } from './employer/SupportChat';
+import { DocumentationView } from './DocumentationView';
+import { useConfirm } from '../contexts/ConfirmContext';
+
+interface SuperAdminViewProps {
+  onLogout: () => void;
+  onUpdateSystemConfig?: (config: any) => void;
+  unreadSupportMessages?: number;
+  unreadByOrg?: Record<string, number>;
+  onResetUnread?: (orgId?: string) => void;
+  onTabChange?: (tab: string) => void;
+}
+
+const SuperAdminView: React.FC<SuperAdminViewProps> = ({ 
+  onLogout, 
+  onUpdateSystemConfig, 
+  unreadSupportMessages = 0, 
+  unreadByOrg = {},
+  onResetUnread,
+  onTabChange
+}) => {
+  const { confirm } = useConfirm();
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [stats, setStats] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [editingOrg, setEditingOrg] = useState<Organization | null>(null);
+  const [editingAdmin, setEditingAdmin] = useState<User | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [activeTab, setActiveTab] = useState<'orgs' | 'plans' | 'marketing' | 'diagnostics' | 'app_diagnostics' | 'support' | 'instructions'>('orgs');
+  const [viewingUsersOrg, setViewingUsersOrg] = useState<{ id: string; name: string } | null>(null);
+  const [orgUsers, setOrgUsers] = useState<User[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [promoCodes, setPromoCodes] = useState<PromoCode[]>([]);
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
+  const [newOrg, setNewOrg] = useState<Partial<Organization>>({
+    plan: PlanType.FREE,
+    status: 'active'
+  });
+  const [newPromo, setNewPromo] = useState<Partial<PromoCode>>({
+    planType: PlanType.PRO,
+    durationDays: 14,
+    maxUses: 1,
+    isActive: true
+  });
+  const [saving, setSaving] = useState(false);
+  const [confirmDeleteOrg, setConfirmDeleteOrg] = useState<Organization | null>(null);
+  const [deletePinInput, setDeletePinInput] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [resetPinConfirm, setResetPinConfirm] = useState<{ orgId: string; pin: string } | null>(null);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+  const [checkingDiagnostics, setCheckingDiagnostics] = useState(false);
+  const [appTests, setAppTests] = useState<any[]>([]);
+  const [runningAppTests, setRunningAppTests] = useState(false);
+  const [systemConfig, setSystemConfig] = useState<any>(null);
+  const [newSuperAdminPin, setNewSuperAdminPin] = useState('');
+  const [newGlobalAdminPin, setNewGlobalAdminPin] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [emailColumnMissing, setEmailColumnMissing] = useState(false);
+
+  useEffect(() => {
+    const checkSchema = async () => {
+      const { error } = await supabase.from('users').select('email').limit(1);
+      if (error && (error.code === '42703' || error.message?.includes('column'))) {
+        setEmailColumnMissing(true);
+      }
+    };
+    checkSchema();
+  }, []);
+
+  const handleFixDatabase = async () => {
+    setLoading(true);
+    const result = await db.fixDatabase();
+    if (result.success) {
+      alert('База данных успешно обновлена!');
+      setEmailColumnMissing(false);
+      window.location.reload();
+    } else {
+      alert('Не удалось исправить автоматически. Пожалуйста, выполните SQL:\n\n' + result.sql);
+    }
+    setLoading(false);
+  };
+
+  // Reset unread count when entering support view or changing selected org
+  useEffect(() => {
+    if (onTabChange) onTabChange(activeTab);
+  }, [activeTab, onTabChange]);
+
+  const runDiagnostics = async () => {
+    setCheckingDiagnostics(true);
+    try {
+      const results = await db.getDiagnostics();
+      setDiagnostics(results);
+    } catch (e) {
+      console.error('Diagnostics failed:', e);
+    } finally {
+      setCheckingDiagnostics(false);
+    }
+  };
+
+  const runAppTests = async () => {
+    setRunningAppTests(true);
+    const tests: any[] = [
+      { id: 'supabase', name: 'Подключение к Supabase', status: 'pending', description: 'Проверка связи с базой данных' },
+      { id: 'auth', name: 'Система авторизации', status: 'pending', description: 'Проверка доступа к таблицам пользователей' },
+      { id: 'orgs', name: 'Управление организациями', status: 'pending', description: 'Проверка чтения данных организаций' },
+      { id: 'logs', name: 'Учет рабочего времени', status: 'pending', description: 'Проверка доступа к логам смен' },
+      { id: 'machines', name: 'Оборудование', status: 'pending', description: 'Проверка доступа к таблице оборудования' },
+      { id: 'positions', name: 'Должности и права', status: 'pending', description: 'Проверка доступа к таблице должностей' },
+      { id: 'plans', name: 'Тарифные планы', status: 'pending', description: 'Проверка доступа к таблице тарифов' },
+      { id: 'storage', name: 'Хранилище (Фото)', status: 'pending', description: 'Проверка доступа к bucket "photos"' },
+      { id: 'pwa', name: 'PWA / Service Worker', status: 'pending', description: 'Проверка регистрации сервис-воркера' },
+      { id: 'db_schema', name: 'Схема базы данных (Email)', status: 'pending', description: 'Проверка наличия колонки email в таблице users' },
+    ];
+    setAppTests(tests);
+
+    for (let i = 0; i < tests.length; i++) {
+      const test = tests[i];
+      try {
+        let success = false;
+        let errorMsg = '';
+        
+        if (test.id === 'supabase') {
+          success = await db.checkConnection();
+        } else if (!db.isConfigured()) {
+          success = false;
+          errorMsg = 'Supabase не настроен';
+        } else if (test.id === 'auth') {
+          const { error } = await supabase.from('users').select('id').limit(1);
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'orgs') {
+          const { error } = await supabase.from('organizations').select('id').limit(1);
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'logs') {
+          const { error } = await supabase.from('work_logs').select('id').limit(1);
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'machines') {
+          const { error } = await supabase.from('machines').select('id').limit(1);
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'positions') {
+          const { error } = await supabase.from('positions').select('name').limit(1);
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'plans') {
+          const { error } = await supabase.from('plans').select('type').limit(1);
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'storage') {
+          const { error } = await supabase.storage.getBucket('photos');
+          success = !error;
+          if (error) errorMsg = error.message;
+        } else if (test.id === 'pwa') {
+          success = 'serviceWorker' in navigator;
+          if (!success) errorMsg = 'Service Worker не поддерживается';
+        } else if (test.id === 'db_schema') {
+          const { error } = await supabase.from('users').select('email').limit(1);
+          success = !error;
+          if (error) errorMsg = 'Колонка email отсутствует. Нажмите "Исправить"';
+        }
+
+        tests[i] = { ...test, status: success ? 'success' : 'error', error: errorMsg };
+        setAppTests([...tests]);
+      } catch (e: any) {
+        tests[i] = { ...test, status: 'error', error: e.message };
+        setAppTests([...tests]);
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    setRunningAppTests(false);
+  };
+
+  useEffect(() => {
+    // Removed automatic runDiagnostics on tab switch as per user request
+  }, [activeTab]);
+
+  const handleSwitchToOrg = (orgId: string) => {
+    try {
+      // Сохраняем ID новой организации
+      localStorage.setItem(STORAGE_KEYS.ORG_ID, orgId);
+      
+      // Очищаем ВЕСЬ кэш, чтобы гарантировать загрузку данных новой организации
+      Object.values(STORAGE_KEYS).forEach(key => {
+        if (key !== STORAGE_KEYS.ORG_ID) {
+          localStorage.removeItem(key);
+        }
+      });
+      
+      // Дополнительная очистка для мобильных браузеров
+      localStorage.removeItem('timesheet_org_data');
+      localStorage.removeItem('timesheet_users_list');
+      localStorage.removeItem('timesheet_work_logs');
+      
+      // Перезагружаем с параметром для сброса кэша браузера и предотвращения возврата назад
+      const cleanUrl = window.location.origin + '/?org_switch=' + orgId + '&t=' + Date.now();
+      window.location.replace(cleanUrl);
+    } catch (e) {
+      alert('Ошибка при переключении: ' + e);
+    }
+  };
+
+  const handleHardReset = async () => {
+    const confirmed = await confirm({
+      title: 'Очистка кэша',
+      message: 'Это полностью очистит локальный кэш и перезагрузит приложение. Продолжить?',
+      type: 'warning'
+    });
+    if (!confirmed) return;
+    const orgId = localStorage.getItem(STORAGE_KEYS.ORG_ID);
+    localStorage.clear();
+    const nextUrl = orgId ? `/?org_switch=${orgId}&reset=${Date.now()}` : `/?reset=${Date.now()}`;
+    window.location.replace(nextUrl);
+  };
+
+  const handleUpdateSystemConfig = async () => {
+    if (newSuperAdminPin.length !== 4) {
+      alert('PIN Супер-Админа должен состоять из 4 цифр');
+      return;
+    }
+    if (newGlobalAdminPin.length !== 4) {
+      alert('Глобальный PIN Администратора должен состоять из 4 цифр');
+      return;
+    }
+    setSaving(true);
+    try {
+      await db.updateSystemConfig({ 
+        super_admin_pin: newSuperAdminPin,
+        global_admin_pin: newGlobalAdminPin
+      });
+      setSystemConfig({ 
+        ...systemConfig, 
+        super_admin_pin: newSuperAdminPin,
+        global_admin_pin: newGlobalAdminPin
+      });
+      if (onUpdateSystemConfig) {
+        onUpdateSystemConfig({
+          super_admin_pin: newSuperAdminPin,
+          global_admin_pin: newGlobalAdminPin
+        });
+      }
+      alert('Настройки системы обновлены');
+    } catch (e) {
+      alert('Ошибка при обновлении настроек');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleViewUsers = async (org: Organization) => {
+    setViewingUsersOrg({ id: org.id, name: org.name });
+    setLoadingUsers(true);
+    try {
+      const users = await db.getUsers(org.id);
+      setOrgUsers(users || []);
+    } catch (e) {
+      console.error('Error fetching org users:', e);
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [orgs, globalStats, dbPlans, dbPromoCodes, dbConfig] = await Promise.all([
+        db.getAllOrganizations(),
+        db.getGlobalStats(),
+        db.getPlans(),
+        db.getPromoCodes(),
+        db.getSystemConfig()
+      ]);
+      if (orgs) setOrganizations(orgs);
+      if (globalStats) setStats(globalStats);
+      
+      if (dbPromoCodes && dbPromoCodes.length > 0) {
+        setPromoCodes(dbPromoCodes);
+        localStorage.setItem(STORAGE_KEYS.PROMO_CODES, JSON.stringify(dbPromoCodes));
+      } else {
+        const cachedPromos = localStorage.getItem(STORAGE_KEYS.PROMO_CODES);
+        if (cachedPromos) setPromoCodes(JSON.parse(cachedPromos));
+      }
+
+      if (dbConfig) {
+        setSystemConfig(dbConfig);
+        setNewSuperAdminPin(dbConfig.super_admin_pin || '7777');
+        setNewGlobalAdminPin(dbConfig.global_admin_pin || '0000');
+      }
+
+      if (dbPlans && dbPlans.length > 0) {
+        const sortedPlans = [...dbPlans].sort((a: any, b: any) => {
+          const order: Record<string, number> = { [PlanType.FREE]: 0, [PlanType.PRO]: 1, [PlanType.BUSINESS]: 2 };
+          return (order[a.type] ?? 99) - (order[b.type] ?? 99);
+        });
+        setPlans(sortedPlans);
+      } else {
+        // Fallback to default plans if none in DB
+        const defaultPlans: Plan[] = [
+          {
+            type: PlanType.FREE,
+            name: 'Бесплатный',
+            price: 0,
+            limits: { maxUsers: 3, maxMachines: 2, features: { photoCapture: false, nightShift: false, advancedAnalytics: false, payroll: false, shiftMonitoring: false, payments: true, multipleBranches: false, auditLog: false } }
+          },
+          {
+            type: PlanType.PRO,
+            name: 'Профессиональный',
+            price: 2900,
+            limits: { maxUsers: 20, maxMachines: 10, features: { photoCapture: true, nightShift: true, advancedAnalytics: true, payroll: true, shiftMonitoring: true, payments: true, multipleBranches: true, auditLog: true } }
+          },
+          {
+            type: PlanType.BUSINESS,
+            name: 'Бизнес',
+            price: 9900,
+            limits: { maxUsers: 1000, maxMachines: 1000, features: { photoCapture: true, nightShift: true, advancedAnalytics: true, payroll: true, shiftMonitoring: true, payments: true, multipleBranches: true, auditLog: true } }
+          }
+        ];
+        setPlans(defaultPlans);
+      }
+    } catch (error) {
+      console.error('Error fetching super admin data:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchData();
+  };
+
+  useEffect(() => {
+    const fetchAdmin = async () => {
+      if (editingOrg) {
+        setLoadingUsers(true);
+        console.log('Fetching admin for org:', editingOrg.id);
+        
+        // Check if email column exists
+        const { data: colData, error: colError } = await supabase
+          .from('users')
+          .select('email')
+          .limit(1);
+        
+        if (colError && (colError.code === '42703' || colError.message?.includes('column'))) {
+          console.warn('Email column is missing in users table');
+          setEmailColumnMissing(true);
+        } else {
+          setEmailColumnMissing(false);
+        }
+
+        const users = await db.getUsers(editingOrg.id);
+        
+        if (users === null) {
+          console.error('Failed to fetch users - check Supabase connection and RLS');
+        }
+
+        // Look for admin: 
+        // 1. Try to find a user with an email (real account)
+        // 2. Try to find by position 'Администратор'
+        // 3. Fallback to 'admin' ID
+        const admin = users?.find(u => u.email && (u.isAdmin || u.position === 'Администратор')) ||
+                      users?.find(u => u.position === 'Администратор' && u.id !== 'admin') ||
+                      users?.find(u => u.isAdmin && u.id !== 'admin') ||
+                      users?.find(u => u.id === 'admin');
+        
+        console.log('Found admin:', JSON.stringify(admin, null, 2));
+        setEditingAdmin(admin || null);
+        setAdminPassword('');
+        setLoadingUsers(false);
+      } else {
+        setEditingAdmin(null);
+        setAdminPassword('');
+      }
+    };
+    fetchAdmin();
+  }, [editingOrg]);
+
+  const handleUpdateOrg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingOrg) return;
+    
+    setSaving(true);
+    try {
+      // Update Organization
+      const { error: orgError } = await db.updateOrganization(editingOrg.id, {
+        plan: editingOrg.plan,
+        status: editingOrg.status,
+        name: editingOrg.name,
+        email: editingOrg.email,
+        expiryDate: editingOrg.expiryDate,
+        debugEnabled: editingOrg.debugEnabled
+      });
+      
+      if (orgError) {
+        alert('Ошибка при обновлении организации: ' + (orgError as any).message);
+        setSaving(false);
+        return;
+      }
+
+      // Update Admin if changed
+      if (editingAdmin) {
+        console.log('Saving admin data:', editingAdmin);
+        const { error: upsertError } = await db.upsertUser(editingAdmin, editingOrg.id);
+        
+        if (upsertError) {
+          console.error('Admin upsert failed:', upsertError);
+          const err = upsertError as any;
+          if (err.code === '42703' || err.message?.includes('column')) {
+            alert('ВНИМАНИЕ: Данные администратора сохранены БЕЗ Email, так как колонка email отсутствует в базе данных. Пожалуйста, выполните SQL-запрос в Diagnostics.');
+          } else {
+            alert('Ошибка сохранения администратора: ' + err.message);
+          }
+        }
+        
+        // If email and password are provided, try to create/update Supabase Auth account
+        if (editingAdmin.email && adminPassword) {
+          console.log('Attempting to create/update Auth account for:', editingAdmin.email);
+          try {
+            const { data: authData, error: signUpError } = await supabase.auth.signUp({
+              email: editingAdmin.email,
+              password: adminPassword,
+              options: {
+                data: {
+                  name: editingAdmin.name,
+                  organizationId: editingOrg.id,
+                  isAdmin: true,
+                  position: 'Администратор'
+                }
+              }
+            });
+            
+            if (signUpError) {
+              if (signUpError.message.includes('Refresh Token Not Found')) {
+                await supabase.auth.signOut();
+                alert('Проблема с сессией. Пожалуйста, попробуйте еще раз.');
+                setSaving(false);
+                return;
+              }
+              if (signUpError.message.includes('already registered')) {
+                console.log('Admin already has an auth account');
+                alert('Аккаунт с таким Email уже существует. Данные профиля обновлены.');
+              } else {
+                console.error('Error creating auth account:', signUpError);
+                alert('Ошибка авторизации: ' + signUpError.message);
+              }
+            } else if (authData.user) {
+              // LINKING: If we just created a new Auth account for an 'admin' ID user,
+              // we should update the record in the users table to use the new UUID.
+              if (editingAdmin.id === 'admin') {
+                console.log('Linking "admin" record to new UUID:', authData.user.id);
+                const linkedAdmin = { ...editingAdmin, id: authData.user.id };
+                const { error: linkError } = await db.upsertUser(linkedAdmin, editingOrg.id);
+                
+                if (!linkError) {
+                  // ONLY delete the old record if the new one was successfully created
+                  await supabase.from('users').delete().eq('id', 'admin').eq('organization_id', editingOrg.id);
+                  console.log('Old "admin" record deleted successfully');
+                } else {
+                  console.error('Failed to create linked admin record:', linkError);
+                }
+              }
+              alert('Аккаунт администратора готов. Проверьте почту ' + editingAdmin.email + ' для подтверждения.');
+            }
+          } catch (authErr) {
+            console.error('Auth error:', authErr);
+          }
+        }
+      }
+      
+      setOrganizations(prev => prev.map(o => o.id === editingOrg.id ? editingOrg : o));
+      setEditingOrg(null);
+      alert('Изменения успешно сохранены');
+    } catch (error) {
+      console.error('Error updating org:', error);
+      alert('Произошла ошибка при сохранении');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateOrg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newOrg.name || !newOrg.id || !newOrg.ownerId) {
+      alert('Пожалуйста, заполните все обязательные поля (Название, ID, Владелец)');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const orgToCreate = {
+        id: newOrg.id,
+        name: newOrg.name,
+        email: newOrg.email,
+        ownerId: newOrg.ownerId,
+        plan: newOrg.plan || PlanType.FREE,
+        status: newOrg.status || 'active'
+      } as Organization;
+
+      await db.createOrganization(orgToCreate);
+
+      // Автоматически создаем первого сотрудника с правами Администратора
+      const adminUser: User = {
+        id: 'admin',
+        name: 'Администратор',
+        role: UserRole.EMPLOYER,
+        position: 'Администратор',
+        pin: '0000',
+        isAdmin: true,
+        organizationId: orgToCreate.id
+      };
+      
+      await db.upsertUser(adminUser, orgToCreate.id);
+
+      setOrganizations(prev => [...prev, orgToCreate]);
+      setIsCreating(false);
+      setNewOrg({ plan: PlanType.FREE, status: 'active' });
+    } catch (error) {
+      console.error('Error creating org:', error);
+      alert('Ошибка при создании организации. Возможно, такой ID уже занят.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdatePlan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPlan) return;
+
+    setSaving(true);
+    try {
+      await db.savePlan(editingPlan);
+      setPlans(prev => prev.map(p => p.type === editingPlan.type ? editingPlan : p));
+      setEditingPlan(null);
+    } catch (error) {
+      console.error('Error updating plan:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleActivateTrial = async (orgId: string, days: number, plan: PlanType) => {
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + days);
+    
+    setSaving(true);
+    try {
+      await db.updateOrganization(orgId, {
+        status: 'trial',
+        plan: plan,
+        expiryDate: expiryDate.toISOString()
+      });
+      setOrganizations(prev => prev.map(o => o.id === orgId ? { ...o, status: 'trial', plan, expiryDate: expiryDate.toISOString() } : o));
+      alert(`Пробный период (${days} дн.) активирован для ${orgId}`);
+    } catch (error) {
+      console.error('Error activating trial:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetAdminPin = async (orgId: string) => {
+    const newPin = Math.floor(1000 + Math.random() * 9000).toString();
+    setResetPinConfirm({ orgId, pin: newPin });
+  };
+
+  const confirmResetPin = async () => {
+    if (!resetPinConfirm) return;
+    
+    setSaving(true);
+    try {
+      await db.resetAdminPin(resetPinConfirm.orgId, resetPinConfirm.pin);
+      alert(`Пароль администратора для ${resetPinConfirm.orgId} успешно сброшен. Новый PIN: ${resetPinConfirm.pin}`);
+      setResetPinConfirm(null);
+    } catch (error) {
+      console.error('Error resetting admin pin:', error);
+      alert('Ошибка при сбросе пароля.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteOrg = async () => {
+    if (!confirmDeleteOrg) return;
+    if (deletePinInput !== '7777') {
+      setDeleteError('Неверный PIN супер-админа');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const { error } = await db.deleteOrganization(confirmDeleteOrg.id);
+      if (error) {
+        alert('Ошибка при удалении: ' + error);
+      } else {
+        setOrganizations(prev => prev.filter(o => o.id !== confirmDeleteOrg.id));
+        setConfirmDeleteOrg(null);
+        setDeletePinInput('');
+        setDeleteError(null);
+        alert('Организация и все связанные данные успешно удалены');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Произошла ошибка при удалении');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreatePromo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPromo.code) {
+      alert('Введите код купона');
+      return;
+    }
+
+    const existingPromo = promoCodes.find(p => p.code.toUpperCase() === newPromo.code?.toUpperCase());
+    if (existingPromo) {
+      alert('Промокод с таким кодом уже существует');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const promoId = typeof crypto.randomUUID === 'function' 
+        ? crypto.randomUUID() 
+        : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+
+      const promo: PromoCode = {
+        id: promoId,
+        code: newPromo.code.toUpperCase(),
+        planType: newPromo.planType || PlanType.PRO,
+        durationDays: newPromo.durationDays || 14,
+        maxUses: newPromo.maxUses || 1,
+        usedCount: 0,
+        createdAt: new Date().toISOString(),
+        isActive: true
+      };
+
+      const { error } = await db.savePromoCode(promo);
+      if (error) {
+        const msg = typeof error === 'string' ? error : error.message;
+        alert('Ошибка при сохранении промокода в БД: ' + msg);
+        // Still update local state so it works in the current session
+      }
+      setPromoCodes(prev => [promo, ...prev]);
+      setNewPromo({
+        planType: PlanType.PRO,
+        durationDays: 14,
+        maxUses: 1,
+        isActive: true
+      });
+    } catch (error) {
+      console.error('Error creating promo:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeletePromo = async (id: string) => {
+    const promo = promoCodes.find(p => p.id === id);
+    if (promo && promo.usedCount > 0) {
+      alert('Нельзя удалить промокод, который уже был использован');
+      return;
+    }
+    const confirmed = await confirm({
+      title: 'Удаление промокода',
+      message: 'Удалить этот промокод?',
+      type: 'danger'
+    });
+    if (!confirmed) return;
+    try {
+      await db.deletePromoCode(id);
+      setPromoCodes(prev => prev.filter(p => p.id !== id));
+    } catch (error) {
+      console.error('Error deleting promo:', error);
+    }
+  };
+
+  const filteredOrgs = organizations.filter(org => 
+    org.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    org.id.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const totalUsers = Object.values(stats).reduce((acc, curr) => acc + curr, 0);
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const menuItems = [
+    { id: 'orgs', name: 'Организации', icon: Building2 },
+    { id: 'plans', name: 'Конструктор тарифов', icon: CreditCard },
+    { id: 'marketing', name: 'Маркетинг', icon: Megaphone },
+    { id: 'diagnostics', name: 'База данных', icon: Database },
+    { id: 'app_diagnostics', name: 'Функции', icon: Activity },
+    { id: 'system', name: 'Система', icon: ShieldCheck },
+    { id: 'support', name: 'Поддержка', icon: MessageSquare, badge: unreadSupportMessages },
+    { id: 'instructions', name: 'Инструкция', icon: HelpCircle },
+  ] as const;
+
+  return (
+    <div className="flex h-screen bg-slate-50 dark:bg-slate-950">
+      {/* Mobile Overlay */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
+      <aside className={`bg-slate-900 text-white transition-all duration-300 flex flex-col fixed inset-y-0 left-0 z-50 md:static ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 ${isSidebarCollapsed ? 'w-20' : 'w-64'}`}>
+        <div className="p-6 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="bg-indigo-600 p-2 rounded-lg">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            {!isSidebarCollapsed && (
+              <div>
+                <h1 className="text-lg font-bold tracking-tight">SaaS Back-office</h1>
+                <p className="text-[10px] text-indigo-300 font-medium uppercase tracking-wider">Super Admin</p>
+              </div>
+            )}
+          </div>
+          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden p-2 text-slate-400">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <nav className="flex-1 px-4 py-6 space-y-2">
+          {menuItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id as any)}
+                className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} gap-3 px-4 py-3 rounded-xl transition-all relative ${
+                  activeTab === item.id ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+                title={isSidebarCollapsed ? item.name : undefined}
+              >
+                <Icon className="w-5 h-5 shrink-0" />
+                {!isSidebarCollapsed && <span className="font-medium text-sm">{item.name}</span>}
+                
+                {item.id === 'support' && unreadSupportMessages > 0 && (
+                  <span className={`absolute ${isSidebarCollapsed ? 'top-2 right-2' : 'top-3 right-4'} flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[10px] font-bold text-white ring-2 ring-slate-900`}>
+                    {unreadSupportMessages > 9 ? '9+' : unreadSupportMessages}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="p-4 border-t border-slate-800">
+          <button
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            className="w-full flex items-center justify-center p-3 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all"
+            title={isSidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню'}
+          >
+            {isSidebarCollapsed ? <LayoutGrid className="w-5 h-5" /> : <div className="flex items-center gap-2"><LayoutGrid className="w-5 h-5" /><span>Свернуть</span></div>}
+          </button>
+          <button 
+            onClick={onLogout}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} gap-3 px-4 py-3 text-rose-400 hover:bg-rose-900/20 rounded-xl transition-all mt-2`}
+            title={isSidebarCollapsed ? 'Выйти' : undefined}
+          >
+            <X className="w-5 h-5" />
+            {!isSidebarCollapsed && <span className="font-medium text-sm">Выйти</span>}
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto">
+        <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10 shadow-md dark:shadow-slate-900/20">
+          <div className="max-w-7xl mx-auto px-4 sm:px-8 h-16 flex items-center justify-between">
+            <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden p-2 text-slate-900 dark:text-slate-50">
+              <div className="space-y-1.5">
+                <div className="w-6 h-0.5 bg-current"></div>
+                <div className="w-6 h-0.5 bg-current"></div>
+                <div className="w-6 h-0.5 bg-current"></div>
+              </div>
+            </button>
+            <h2 className="text-lg font-bold text-slate-900 dark:text-slate-50 uppercase tracking-tight">
+              {menuItems.find(i => i.id === activeTab)?.name}
+            </h2>
+          </div>
+        </header>
+
+        <div className="max-w-7xl mx-auto px-8 py-8">
+          {/* Database Schema Warning */}
+        {emailColumnMissing && (
+          <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl flex items-center justify-between">
+            <div className="flex items-center gap-3 text-amber-800 dark:text-amber-200">
+              <AlertCircle className="w-5 h-5" />
+              <div>
+                <p className="font-bold">Обнаружена проблема со схемой БД</p>
+                <p className="text-sm opacity-80 text-amber-700 dark:text-amber-300">Отсутствует колонка "email" в таблице "users". Это может мешать входу администраторов.</p>
+              </div>
+            </div>
+            <button 
+              onClick={handleFixDatabase}
+              disabled={loading}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-bold transition-colors flex items-center gap-2"
+            >
+              <Database className="w-4 h-4" />
+              {loading ? 'Исправление...' : 'Исправить сейчас'}
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'orgs' ? (
+          <>
+            {/* Stats Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                    <Building2 className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <span className="text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded-full">Total</span>
+                </div>
+                <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Организаций</p>
+                <p className="text-3xl font-bold text-slate-900 dark:text-slate-50">{organizations.length}</p>
+              </div>
+
+              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl">
+                    <Users className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                  </div>
+                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded-full">Active</span>
+                </div>
+                <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Всего пользователей</p>
+                <p className="text-3xl font-bold text-slate-900 dark:text-slate-50">{totalUsers}</p>
+              </div>
+
+              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl">
+                    <CreditCard className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+                  </div>
+                  <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded-full">Revenue</span>
+                </div>
+                <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Платные подписки</p>
+                <p className="text-3xl font-bold text-slate-900 dark:text-slate-50">
+                  {organizations.filter(o => o.plan !== PlanType.FREE).length}
+                </p>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="flex flex-col sm:flex-row gap-4 mb-6 justify-between items-center">
+              <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto items-center">
+                <div className="relative w-full sm:w-96">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                  <input 
+                    type="text"
+                    placeholder="Поиск по названию или ID..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-md dark:shadow-slate-900/20 text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <button 
+                  onClick={handleRefresh}
+                  disabled={refreshing}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-all shadow-md dark:shadow-slate-900/20 disabled:opacity-50 text-slate-900 dark:text-slate-100"
+                >
+                  <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+                  Обновить
+                </button>
+              </div>
+              <button 
+                onClick={() => setIsCreating(true)}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 font-bold"
+              >
+                <Plus className="w-5 h-5" />
+                Создать организацию
+              </button>
+            </div>
+
+            {/* Organizations Table */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-800/50 border-bottom border-slate-200 dark:border-slate-800">
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Организация</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Тариф</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Статус</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Пользователи</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Создан</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">ID</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {loading ? (
+                      Array(5).fill(0).map((_, i) => (
+                        <tr key={i} className="animate-pulse">
+                          <td colSpan={6} className="px-6 py-4">
+                            <div className="h-4 bg-slate-100 dark:bg-slate-800 rounded w-full"></div>
+                          </td>
+                        </tr>
+                      ))
+                    ) : filteredOrgs.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-6 py-12 text-center text-slate-500 dark:text-slate-400">
+                          Организации не найдены
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredOrgs.map((org) => (
+                        <tr key={org.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-900/30 rounded-lg flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-bold">
+                                {org.name.charAt(0)}
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <div className="font-bold text-slate-900 dark:text-slate-50">{org.name}</div>
+                                  {unreadByOrg[org.id] > 0 && (
+                                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[10px] font-bold text-white">
+                                      {unreadByOrg[org.id] > 9 ? '9+' : unreadByOrg[org.id]}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-slate-500 dark:text-slate-400">Владелец: {org.ownerId}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                              org.plan === PlanType.BUSINESS ? 'bg-purple-100 text-purple-700' :
+                              org.plan === PlanType.PRO ? 'bg-blue-100 text-blue-700 dark:text-blue-300' :
+                              'bg-slate-100 text-slate-700 dark:text-slate-200'
+                            }`}>
+                              {org.plan}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-1.5">
+                              <div className={`w-2 h-2 rounded-full ${
+                                org.status === 'active' ? 'bg-emerald-500' :
+                                org.status === 'trial' ? 'bg-amber-500' :
+                                'bg-rose-500'
+                              }`} />
+                              <span className="text-sm font-medium text-slate-700 dark:text-slate-200 capitalize">{org.status}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <Users className="w-4 h-4 text-slate-400" />
+                              <span className="text-sm font-bold text-slate-900 dark:text-slate-50">{stats[org.id] || 0}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                              {org.createdAt ? new Date(org.createdAt).toLocaleDateString() : '—'}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex flex-col gap-1">
+                              <code className={`text-xs px-2 py-1 rounded font-mono w-fit ${org.id === 'demo_org' ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-600 dark:text-slate-300'}`}>
+                                {org.id}
+                              </code>
+                              {org.id === 'demo_org' && (
+                                <span className="text-[8px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-tighter">Demo System ID</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <button 
+                                onClick={() => handleViewUsers(org)}
+                                className="p-2 text-slate-400 hover:text-emerald-600 dark:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50"
+                                title="Посмотреть сотрудников"
+                              >
+                                <Users className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleResetAdminPin(org.id)}
+                                className="p-2 text-slate-400 hover:text-amber-600 dark:text-amber-400 transition-colors rounded-lg hover:bg-amber-50"
+                                title="Сбросить пароль админа"
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => setEditingOrg(org)}
+                                className="p-2 text-slate-400 hover:text-indigo-600 dark:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-50"
+                                title="Управление тарифом"
+                              >
+                                <Settings2 className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleSwitchToOrg(org.id)}
+                                className="p-2 text-slate-400 hover:text-indigo-600 dark:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-50"
+                                title="Войти в организацию"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  // Set the org ID and then redirect to the login page as the admin user
+                                  localStorage.setItem(STORAGE_KEYS.ORG_ID, org.id);
+                                  localStorage.setItem(STORAGE_KEYS.LAST_USER_ID, 'admin');
+                                  window.location.replace('/');
+                                }}
+                                className="p-2 text-slate-400 hover:text-emerald-600 dark:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50"
+                                title="Войти как администратор"
+                              >
+                                <ShieldCheck className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => setConfirmDeleteOrg(org)}
+                                className="p-2 text-slate-400 hover:text-rose-600 dark:text-rose-400 transition-colors rounded-lg hover:bg-rose-50"
+                                title="Удалить организацию"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            
+            <div className="mt-8 pt-8 border-t border-slate-200 flex flex-col items-center">
+              <p className="text-[10px] text-slate-400 font-bold uppercase mb-4">Проблемы с синхронизацией на мобильном?</p>
+              <button 
+                onClick={handleHardReset}
+                className="flex items-center gap-2 px-6 py-3 bg-slate-100 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-rose-50 hover:text-rose-600 dark:text-rose-400 transition-all text-xs font-black uppercase tracking-widest border border-slate-200"
+              >
+                <Trash2 className="w-4 h-4" />
+                Очистить кэш и перезагрузить
+              </button>
+            </div>
+          </>
+        ) : activeTab === 'instructions' ? (
+          <div className="h-full animate-fadeIn">
+            <DocumentationView />
+          </div>
+        ) : activeTab === 'support' ? (
+          <div className="max-w-2xl mx-auto animate-fadeIn">
+            <SupportChat 
+              currentUser={{ id: 'admin', name: 'Супер-Админ', role: UserRole.SUPER_ADMIN } as any} 
+              orgId="all" 
+              onOrgSelect={(orgId) => onResetUnread && onResetUnread(orgId)}
+              unreadByOrg={unreadByOrg}
+            />
+          </div>
+        ) : activeTab === ('system' as any) ? (
+          <div className="max-w-2xl mx-auto space-y-8 animate-fadeIn">
+            <div className="bg-white rounded-[2.5rem] shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden">
+              <div className="p-8 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
+                <h3 className="text-xl font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight">Безопасность системы</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400">Настройки доступа к панели Супер-Администратора</p>
+              </div>
+              <div className="p-8 space-y-6">
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 ml-1">PIN-код Супер-Админа</label>
+                  <div className="flex gap-4">
+                    <input 
+                      type="text"
+                      maxLength={4}
+                      value={newSuperAdminPin}
+                      onChange={(e) => setNewSuperAdminPin(e.target.value.replace(/\D/g, ''))}
+                      className="flex-1 bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl px-6 py-4 text-2xl font-black text-indigo-600 dark:text-indigo-400 tracking-[0.5em] outline-none focus:border-indigo-500 transition-all"
+                      placeholder="7777"
+                    />
+                    <button 
+                      onClick={handleUpdateSystemConfig}
+                      disabled={saving}
+                      className="px-8 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 disabled:opacity-50"
+                    >
+                      {saving ? '...' : 'Сохранить'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-medium italic">
+                    Этот PIN используется для входа в Back-office через мастер-ключ.
+                  </p>
+                </div>
+
+                <div className="pt-6 border-t border-slate-100 dark:border-slate-800">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 ml-1">Глобальный PIN Администратора</label>
+                  <div className="flex gap-4">
+                    <input 
+                      type="text"
+                      maxLength={4}
+                      value={newGlobalAdminPin}
+                      onChange={(e) => setNewGlobalAdminPin(e.target.value.replace(/\D/g, ''))}
+                      className="flex-1 bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl px-6 py-4 text-2xl font-black text-emerald-600 dark:text-emerald-400 tracking-[0.5em] outline-none focus:border-emerald-500 transition-all"
+                      placeholder="0000"
+                    />
+                    <div className="w-[140px]"></div> {/* Spacer to align with button above if needed, or just leave empty */}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-3 font-medium italic">
+                    Этот PIN работает как "Мастер-ключ" для входа под любым пользователем с ролью Администратор (id='admin').
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'plans' ? (
+          <div className="space-y-8 animate-fadeIn">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              {plans.map((plan) => (
+                <div key={plan.type} className="bg-white rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden flex flex-col">
+                  <div className={`p-6 text-white ${
+                    plan.type === PlanType.BUSINESS ? 'bg-purple-600' :
+                    plan.type === PlanType.PRO ? 'bg-indigo-600' :
+                    'bg-slate-600'
+                  }`}>
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm">
+                        {plan.type === PlanType.BUSINESS ? <Briefcase className="w-6 h-6" /> :
+                         plan.type === PlanType.PRO ? <Zap className="w-6 h-6" /> :
+                         <LayoutGrid className="w-6 h-6" />}
+                      </div>
+                      <span className="text-xs font-bold uppercase tracking-widest opacity-80">{plan.type}</span>
+                    </div>
+                    <h3 className="text-2xl font-bold mb-1">{plan.name}</h3>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-3xl font-black">{plan.price.toLocaleString()}</span>
+                      <span className="text-sm opacity-80">₽ / мес</span>
+                    </div>
+                  </div>
+
+                  <div className="p-6 flex-1 space-y-6">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500 dark:text-slate-400 font-medium">Сотрудников:</span>
+                        <span className="font-bold text-slate-900 dark:text-slate-50">{plan.limits.maxUsers === 1000 ? 'Безлимит' : plan.limits.maxUsers}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500 dark:text-slate-400 font-medium">Оборудования:</span>
+                        <span className="font-bold text-slate-900 dark:text-slate-50">{plan.limits.maxMachines === 1000 ? 'Безлимит' : plan.limits.maxMachines}</span>
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-100 space-y-3">
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.photoCapture ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <Camera className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.photoCapture ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Фотофиксация</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.nightShift ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <Moon className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.nightShift ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Ночные смены</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.advancedAnalytics ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <BarChart3 className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.advancedAnalytics ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Аналитика</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.payroll ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <CreditCard className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.payroll ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Зарплата</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.shiftMonitoring ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <Bell className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.shiftMonitoring ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Мониторинг смен</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.multipleBranches ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <Building2 className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.multipleBranches ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Филиалы</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.auditLog ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <History className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.auditLog ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Журнал аудита</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`p-1 rounded-md ${plan.limits.features.payments ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                          <CreditCard className="w-4 h-4" />
+                        </div>
+                        <span className={plan.limits.features.payments ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Выплаты</span>
+                      </div>
+                    </div>
+
+                    <button 
+                      onClick={() => setEditingPlan(plan)}
+                      className="w-full py-3 bg-slate-50 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-100 transition-all border border-slate-200 flex items-center justify-center gap-2"
+                    >
+                      <Settings2 className="w-4 h-4" />
+                      Редактировать
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 flex items-start gap-4">
+              <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+                <ShieldCheck className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+              </div>
+              <div>
+                <h4 className="font-bold text-indigo-900 mb-1">Совет супер-админу</h4>
+                <p className="text-sm text-indigo-700 leading-relaxed">
+                  Изменения в конструкторе тарифов применяются мгновенно ко всем организациям, использующим данный тариф. 
+                  Будьте осторожны при уменьшении лимитов, так как это может ограничить функционал уже работающих клиентов.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'app_diagnostics' ? (
+          <div className="space-y-8 animate-fadeIn">
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-md dark:shadow-slate-900/20">
+              <div className="flex justify-between items-center mb-8">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">Диагностика функций приложения</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Проверка работоспособности основных модулей системы</p>
+                </div>
+                <button 
+                  onClick={runAppTests}
+                  disabled={runningAppTests}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 font-bold disabled:opacity-50"
+                >
+                  <PlayCircle className={`w-4 h-4 ${runningAppTests ? 'animate-spin' : ''}`} />
+                  Запустить тесты
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {appTests.length > 0 ? (
+                  appTests.map((test) => (
+                    <div key={test.id} className={`p-5 rounded-2xl border transition-all ${
+                      test.status === 'success' ? 'bg-emerald-50 border-emerald-100' : 
+                      test.status === 'error' ? 'bg-rose-50 border-rose-100' : 
+                      'bg-slate-50 border-slate-200'
+                    }`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg ${
+                            test.status === 'success' ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 
+                            test.status === 'error' ? 'bg-rose-100 text-rose-600 dark:text-rose-400' : 
+                            'bg-white text-slate-400'
+                          }`}>
+                            {test.status === 'success' ? <Check className="w-4 h-4" /> : 
+                             test.status === 'error' ? <AlertCircle className="w-4 h-4" /> : 
+                             <RefreshCw className={`w-4 h-4 ${runningAppTests ? 'animate-spin' : ''}`} />}
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-slate-900 dark:text-slate-50 text-sm">{test.name}</h4>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">{test.id}</p>
+                          </div>
+                        </div>
+                        <div className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                          test.status === 'success' ? 'bg-emerald-200 text-emerald-700' : 
+                          test.status === 'error' ? 'bg-rose-200 text-rose-700' : 
+                          'bg-slate-200 text-slate-500 dark:text-slate-400'
+                        }`}>
+                          {test.status === 'success' ? 'OK' : test.status === 'error' ? 'Ошибка' : 'Ожидание'}
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 mb-2">{test.description}</p>
+                      {test.error && (
+                        <div className="mt-2 p-2 bg-white/50 rounded-lg border border-rose-200">
+                          <p className="text-[10px] text-rose-600 dark:text-rose-400 font-mono break-all">{test.error}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="col-span-full py-12 text-center border-2 border-dashed border-slate-200 rounded-3xl">
+                    <Activity className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+                    <p className="text-slate-400">Нажмите "Запустить тесты" для начала диагностики</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 flex items-start gap-4">
+              <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+                <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h4 className="font-bold text-amber-900 mb-1">О диагностике функций</h4>
+                <p className="text-sm text-amber-700 leading-relaxed">
+                  Эта панель проверяет не только наличие таблиц, но и корректность работы бизнес-логики приложения. 
+                  Если какой-то тест завершился с ошибкой, это может означать отсутствие необходимых прав доступа (RLS), 
+                  ошибки в структуре данных или проблемы с конфигурацией Supabase.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'diagnostics' ? (
+          <div className="space-y-8 animate-fadeIn">
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-md dark:shadow-slate-900/20">
+              <div className="flex justify-between items-center mb-8">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">Диагностика Supabase</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Проверка подключения и целостности таблиц</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => {
+                      const errors: string[] = [];
+                      if (diagnostics.status === 'error') errors.push(`Критическая ошибка: ${diagnostics.message}`);
+                      
+                      Object.entries(diagnostics.tables || {}).forEach(([table, status]: [string, any]) => {
+                        if (status.status !== 'ok') errors.push(`Таблица ${table}: ${status.message}`);
+                      });
+                      
+                      Object.entries(diagnostics.storage || {}).forEach(([bucket, status]: [string, any]) => {
+                        if (status.status !== 'ok') errors.push(`Хранилище ${bucket}: ${status.message}`);
+                      });
+                      
+                      Object.entries(diagnostics.columns || {}).forEach(([col, status]: [string, any]) => {
+                        if (status === 'missing') errors.push(`Поле ${col}: Отсутствует`);
+                      });
+                      
+                      if (errors.length === 0) {
+                        alert('Ошибок не обнаружено');
+                      } else {
+                        navigator.clipboard.writeText(errors.join('\n'));
+                        alert('Все ошибки скопированы в буфер обмена');
+                      }
+                    }}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 transition-all font-bold text-sm"
+                  >
+                    <Save className="w-4 h-4" />
+                    Скопировать ошибки
+                  </button>
+                  <button 
+                    onClick={runDiagnostics}
+                    disabled={checkingDiagnostics}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 font-bold disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${checkingDiagnostics ? 'animate-spin' : ''}`} />
+                    Запустить проверку
+                  </button>
+                </div>
+              </div>
+
+              {diagnostics ? (
+                <div className="space-y-8">
+                  {/* Config Section */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className={`p-6 rounded-2xl border ${diagnostics.config.urlSet ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'}`}>
+                      <div className="flex items-center gap-3 mb-2">
+                        {diagnostics.config.urlSet ? <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" /> : <X className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
+                        <span className="font-bold text-slate-900 dark:text-slate-50">VITE_SUPABASE_URL</span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{diagnostics.config.urlSet ? 'Настроен корректно' : 'Не найден или содержит значение по умолчанию'}</p>
+                    </div>
+                    <div className={`p-6 rounded-2xl border ${diagnostics.config.keySet ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'}`}>
+                      <div className="flex items-center gap-3 mb-2">
+                        {diagnostics.config.keySet ? <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" /> : <X className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
+                        <span className="font-bold text-slate-900 dark:text-slate-50">VITE_SUPABASE_ANON_KEY</span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{diagnostics.config.keySet ? 'Настроен корректно' : 'Не найден или содержит значение по умолчанию'}</p>
+                    </div>
+                  </div>
+
+                  {/* Overall Status */}
+                  {diagnostics.status === 'error' && (
+                    <div className="p-6 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-4">
+                      <X className="w-6 h-6 text-rose-600 dark:text-rose-400 flex-shrink-0" />
+                      <div>
+                        <h4 className="font-bold text-rose-900">Критическая ошибка</h4>
+                        <p className="text-sm text-rose-700">{diagnostics.message}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tables Section */}
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 uppercase tracking-wider">Статус таблиц</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                      {Object.entries(diagnostics.tables || {}).map(([table, status]: [string, any]) => (
+                        <div key={table} className={`p-4 rounded-xl border ${status.status === 'ok' ? 'bg-white border-slate-200' : 'bg-rose-50 border-rose-200'}`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-200">{table}</span>
+                            {status.status === 'ok' ? <Check className="w-4 h-4 text-emerald-500" /> : <X className="w-4 h-4 text-rose-500" />}
+                          </div>
+                          {status.status !== 'ok' && (
+                            <p className="text-[10px] text-rose-600 dark:text-rose-400 leading-tight">{status.message}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Storage Section */}
+                  {diagnostics.storage && (
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 uppercase tracking-wider">Хранилище (Storage)</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {Object.entries(diagnostics.storage).map(([bucket, status]: [string, any]) => (
+                          <div key={bucket} className={`p-4 rounded-xl border ${status.status === 'ok' ? 'bg-white border-slate-200' : 'bg-rose-50 border-rose-200'}`}>
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-200">Bucket: {bucket}</span>
+                              {status.status === 'ok' ? <Check className="w-4 h-4 text-emerald-500" /> : <X className="w-4 h-4 text-rose-500" />}
+                            </div>
+                            {status.status === 'ok' ? (
+                              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 leading-tight">Доступен (Public: {status.public ? 'Да' : 'Нет'})</p>
+                            ) : (
+                              <div className="space-y-2">
+                                <p className="text-[10px] text-rose-600 dark:text-rose-400 leading-tight">{status.message}</p>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={async () => {
+                                      const confirmed = await confirm({
+                                        title: 'Создание бакета',
+                                        message: `Попытаться создать бакет "${bucket}" через API?`,
+                                        type: 'info'
+                                      });
+                                      if (!confirmed) return;
+                                      const { error } = await db.createBucket(bucket);
+                                      if (error) {
+                                        const msg = typeof error === 'string' ? error : error.message;
+                                        alert('Ошибка API: ' + msg + '\n\nПопробуйте использовать SQL-фикс ниже.');
+                                      } else {
+                                        alert('Бакет создан через API!');
+                                        runDiagnostics();
+                                      }
+                                    }}
+                                    className="flex-1 py-1 bg-indigo-600 text-white text-[10px] rounded font-bold hover:bg-indigo-700"
+                                  >
+                                    Создать (API)
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Columns Section */}
+                  {diagnostics.columns && Object.keys(diagnostics.columns).length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 uppercase tracking-wider">Статус полей (колонок)</h4>
+                      {Object.values(diagnostics.columns).every(status => status === 'ok') && 
+                       Object.values(diagnostics.tables).every((status: any) => status.status === 'ok') ? (
+                        <div className="p-4 rounded-xl border bg-emerald-50 border-emerald-200 flex items-center gap-3">
+                          <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                          <span className="text-sm font-bold text-emerald-900">Диагностика проведена - все поля и колонки в порядке</span>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {Object.values(diagnostics.columns).every(status => status === 'ok') && (
+                             <div className="p-4 rounded-xl border bg-amber-50 border-amber-200 flex items-center gap-3">
+                               <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                               <span className="text-sm font-bold text-amber-900">Колонки в существующих таблицах в порядке, но обнаружены ошибки в таблицах выше.</span>
+                             </div>
+                          )}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {Object.entries(diagnostics.columns)
+                              .filter(([_, status]) => status === 'missing')
+                              .map(([col, status]: [string, any]) => (
+                              <div key={col} className="p-4 rounded-xl border bg-amber-50 border-amber-200">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-mono font-bold text-slate-700 dark:text-slate-200">{col}</span>
+                                  <X className="w-3 h-3 text-amber-500" />
+                                </div>
+                                <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-1">Поле отсутствует</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* SQL Fixes Section */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 uppercase tracking-wider">SQL для исправления</h4>
+                      <button 
+                        onClick={() => {
+                          const fullSchema = db.getFullSqlSchema();
+                          setDiagnostics((prev: any) => ({
+                            ...prev,
+                            sqlFixes: [fullSchema]
+                          }));
+                        }}
+                        className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 dark:text-slate-300 px-3 py-1 rounded-lg font-bold transition-all"
+                      >
+                        Сформировать полный SQL запрос
+                      </button>
+                    </div>
+                    
+                    {diagnostics.sqlFixes && diagnostics.sqlFixes.length > 0 ? (
+                      <div className="p-4 bg-slate-900 rounded-2xl overflow-hidden">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-[10px] text-slate-400 font-mono">Скопируйте и выполните в SQL Editor в Supabase</span>
+                          <button 
+                            onClick={() => {
+                              navigator.clipboard.writeText(diagnostics.sqlFixes.join('\n\n'));
+                              alert('SQL скопирован в буфер обмена');
+                            }}
+                            className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold"
+                          >
+                            Копировать всё
+                          </button>
+                        </div>
+                        <pre className="text-[10px] text-slate-300 font-mono overflow-x-auto p-2 max-h-60">
+                          {diagnostics.sqlFixes.join('\n\n')}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="p-8 border-2 border-dashed border-slate-200 rounded-2xl text-center">
+                        <p className="text-sm text-slate-400">Автоматических исправлений не требуется. Нажмите кнопку выше, чтобы получить полный SQL-запрос для развертывания.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {diagnostics.status === 'partial' && (
+                    <div className="p-6 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-4">
+                      <Activity className="w-6 h-6 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+                      <div>
+                        <h4 className="font-bold text-amber-900">Частичная доступность</h4>
+                        <p className="text-sm text-amber-700">Некоторые таблицы отсутствуют или недоступны. Убедитесь, что вы выполнили все SQL-миграции в панели Supabase.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="py-20 text-center">
+                  <RefreshCw className="w-10 h-10 text-slate-200 animate-spin mx-auto mb-4" />
+                  <p className="text-slate-400">Выполняется диагностика...</p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 flex items-start gap-4">
+                <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+                  <ShieldCheck className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-indigo-900 mb-1">Как исправить ошибки?</h4>
+                  <ul className="text-sm text-indigo-700 space-y-2 list-disc ml-4 mt-2">
+                    <li>Проверьте переменные окружения в настройках AI Studio.</li>
+                    <li>Убедитесь, что в Supabase созданы все таблицы (organizations, users, work_logs, machines, positions, plans, promo_codes, active_shifts, system_config).</li>
+                    <li>Если отсутствует колонка (column does not exist), используйте SQL-запрос <code>ALTER TABLE имя_таблицы ADD COLUMN имя_колонки ТИП;</code></li>
+                    <li>Для бакетов Storage убедитесь, что они публичные (Public).</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 flex items-start gap-4">
+                <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+                  <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-amber-900 mb-1">Советы по SQL</h4>
+                  <p className="text-sm text-amber-700 leading-relaxed">
+                    Если автоматический SQL не помог, нажмите <b>"Сформировать полный SQL запрос"</b>. 
+                    Скопируйте его и вставьте в <b>SQL Editor</b> в панели Supabase. 
+                    Это гарантированно создаст все нужные структуры.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-8 animate-fadeIn">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Promo Code Creation */}
+              <div className="lg:col-span-1">
+                <div className="bg-white p-6 rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 sticky top-24">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-indigo-50 rounded-lg">
+                      <Ticket className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                    </div>
+                    <h3 className="font-bold text-slate-900 dark:text-slate-50">Создать промокод</h3>
+                  </div>
+
+                  <form onSubmit={handleCreatePromo} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Код (напр. SUMMER24)</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="PROMO14"
+                        value={newPromo.code || ''}
+                        onChange={(e) => setNewPromo({...newPromo, code: e.target.value.toUpperCase()})}
+                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Тариф</label>
+                        <select 
+                          value={newPromo.planType}
+                          onChange={(e) => setNewPromo({...newPromo, planType: e.target.value as PlanType})}
+                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        >
+                          <option value={PlanType.PRO}>PRO</option>
+                          <option value={PlanType.BUSINESS}>BUSINESS</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Дней</label>
+                        <input 
+                          type="number"
+                          required
+                          min="1"
+                          value={newPromo.durationDays || ''}
+                          onChange={(e) => setNewPromo({...newPromo, durationDays: parseInt(e.target.value)})}
+                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Макс. использований</label>
+                      <input 
+                        type="number"
+                        required
+                        min="1"
+                        value={newPromo.maxUses || ''}
+                        onChange={(e) => setNewPromo({...newPromo, maxUses: parseInt(e.target.value)})}
+                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
+                    </div>
+
+                    <button 
+                      type="submit"
+                      disabled={saving}
+                      className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 flex items-center justify-center gap-2"
+                    >
+                      {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                      Сгенерировать
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              {/* Promo Codes List & Trial Activation */}
+              <div className="lg:col-span-2 space-y-8">
+                {/* Active Promo Codes */}
+                <div className="bg-white rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                    <h3 className="font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
+                      <Ticket className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      Активные промокоды
+                    </h3>
+                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-100 px-2 py-1 rounded-full">{promoCodes.length}</span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {promoCodes.length === 0 ? (
+                      <div className="p-12 text-center text-slate-500 dark:text-slate-400">Промокоды не созданы</div>
+                    ) : (
+                      promoCodes.map((promo) => (
+                        <div key={promo.id} className="p-4 hover:bg-slate-50 transition-colors flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-black text-xs">
+                              {promo.code.substring(0, 3)}
+                            </div>
+                            <div>
+                              <div className="font-mono font-bold text-slate-900 dark:text-slate-50">{promo.code}</div>
+                              <div className="text-xs text-slate-500 dark:text-slate-400">
+                                {promo.planType} • {promo.durationDays} дн. • Исп: {promo.usedCount}/{promo.maxUses}
+                              </div>
+                              {promo.usedCount > 0 && promo.lastUsedBy && (
+                                <div className="text-[10px] text-slate-400 mt-1">
+                                  Активирован: {promo.lastUsedBy}
+                                  {promo.lastUsedAt && ` (с ${new Date(promo.lastUsedAt).toLocaleDateString()} по ${new Date(new Date(promo.lastUsedAt).getTime() + promo.durationDays * 24 * 60 * 60 * 1000).toLocaleDateString()})`}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => handleDeletePromo(promo.id)}
+                            className="p-2 text-slate-400 hover:text-rose-600 dark:text-rose-400 transition-colors"
+                          >
+                            <Trash2 className="w-5 h-5" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Trial Activation for Clients */}
+                <div className="bg-white rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                    <h3 className="font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
+                      <Zap className="w-5 h-5 text-amber-500" />
+                      Быстрая активация Trial
+                    </h3>
+                  </div>
+                  <div className="p-6">
+                    <div className="relative mb-6">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input 
+                        type="text"
+                        placeholder="Найти клиента для активации..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      {filteredOrgs.slice(0, 5).map(org => (
+                        <div key={org.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                          <div>
+                            <div className="font-bold text-sm text-slate-900 dark:text-slate-50">{org.name}</div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400">Текущий: {org.plan} • {org.status}</div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => handleActivateTrial(org.id, 7, PlanType.PRO)}
+                              className="px-3 py-1.5 bg-white border border-slate-200 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-bold hover:bg-indigo-50 transition-all"
+                            >
+                              +7д PRO
+                            </button>
+                            <button 
+                              onClick={() => handleActivateTrial(org.id, 14, PlanType.BUSINESS)}
+                              className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all shadow-md dark:shadow-slate-900/20"
+                            >
+                              +14д BIZ
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </main>
+
+      {/* Edit Plan Modal */}
+      {editingPlan && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl dark:shadow-slate-900/40 w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-800 max-h-[90vh] flex flex-col">
+            <div className="bg-slate-900 dark:bg-slate-950 px-6 py-4 flex justify-between items-center shrink-0">
+              <h3 className="text-white font-bold">Настройка тарифа: {editingPlan.name}</h3>
+              <button onClick={() => setEditingPlan(null)} className="text-slate-400 hover:text-white transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleUpdatePlan} className="flex flex-col flex-1 min-h-0">
+              <div className="p-6 space-y-6 overflow-y-auto flex-1 custom-scrollbar">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Название тарифа</label>
+                  <input 
+                    type="text"
+                    value={editingPlan.name}
+                    onChange={(e) => setEditingPlan({...editingPlan, name: e.target.value})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Цена (₽/мес)</label>
+                  <input 
+                    type="number"
+                    value={editingPlan.price}
+                    onChange={(e) => setEditingPlan({...editingPlan, price: parseInt(e.target.value)})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Макс. сотрудников</label>
+                  <input 
+                    type="number"
+                    value={editingPlan.limits.maxUsers}
+                    onChange={(e) => setEditingPlan({
+                      ...editingPlan, 
+                      limits: { ...editingPlan.limits, maxUsers: parseInt(e.target.value) }
+                    })}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Макс. оборудования</label>
+                  <input 
+                    type="number"
+                    value={editingPlan.limits.maxMachines}
+                    onChange={(e) => setEditingPlan({
+                      ...editingPlan, 
+                      limits: { ...editingPlan.limits, maxMachines: parseInt(e.target.value) }
+                    })}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Доступные функции</label>
+                <div className="grid grid-cols-1 gap-3">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
+                    <div className="flex items-center gap-3">
+                      <Camera className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Фотофиксация</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Обязательное фото при входе/выходе</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.photoCapture}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, photoCapture: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
+                    <div className="flex items-center gap-3">
+                      <Moon className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Ночные смены</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Учет работы в ночное время с бонусом</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.nightShift}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, nightShift: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                    <div className="flex items-center gap-3">
+                      <BarChart3 className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Продвинутая аналитика</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Графики, отчеты и экспорт в PDF/Excel</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.advancedAnalytics}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, advancedAnalytics: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                    <div className="flex items-center gap-3">
+                      <CreditCard className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Модуль "Зарплата"</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Расчет ставок, смен и штрафов</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.payroll}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, payroll: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                    <div className="flex items-center gap-3">
+                      <Bell className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Мониторинг смен</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Уведомления о просроченных сменах в Telegram</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.shiftMonitoring}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, shiftMonitoring: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                    <div className="flex items-center gap-3">
+                      <Building2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Филиалы</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Поддержка нескольких локаций</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.multipleBranches}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, multipleBranches: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                    <div className="flex items-center gap-3">
+                      <History className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Журнал аудита</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Фиксация действий администраторов</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.auditLog}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, auditLog: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                    <div className="flex items-center gap-3">
+                      <CreditCard className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Выплаты</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Учет выплат сотрудникам</p>
+                      </div>
+                    </div>
+                    <input 
+                      type="checkbox"
+                      checked={editingPlan.limits.features.payments}
+                      onChange={(e) => setEditingPlan({
+                        ...editingPlan,
+                        limits: {
+                          ...editingPlan.limits,
+                          features: { ...editingPlan.limits.features, payments: e.target.checked }
+                        }
+                      })}
+                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-100 bg-slate-50 shrink-0 flex gap-3">
+                <button 
+                  type="button"
+                  onClick={() => setEditingPlan(null)}
+                  className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 transition-all"
+                >
+                  Отмена
+                </button>
+                <button 
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  Сохранить тариф
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {/* Modals */}
+      {confirmDeleteOrg && (
+        <div className="fixed inset-0 z-[150] bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 p-8 w-full max-w-md border border-slate-200 dark:border-slate-800">
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-xl">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <h3 className="text-lg font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight">Удаление организации</h3>
+              </div>
+              <button onClick={() => { setConfirmDeleteOrg(null); setDeletePinInput(''); setDeleteError(null); }} className="text-slate-400 hover:text-slate-900 dark:text-slate-50 text-2xl">&times;</button>
+            </div>
+            
+            <div className="space-y-6">
+              <div className="p-4 bg-rose-50 dark:bg-rose-900/20 border border-rose-100 dark:border-rose-800/30 rounded-2xl">
+                <p className="text-sm text-rose-800 dark:text-rose-200 font-bold leading-relaxed">
+                  Внимание! Это действие безвозвратно удалит организацию <span className="underline">{confirmDeleteOrg.name}</span> ({confirmDeleteOrg.id}) и ВСЕ связанные данные: сотрудников, логи, оборудование и настройки.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Введите PIN супер-админа для подтверждения</label>
+                <input 
+                  type="password"
+                  maxLength={4}
+                  value={deletePinInput}
+                  onChange={(e) => {
+                    setDeletePinInput(e.target.value.replace(/[^0-9]/g, ''));
+                    setDeleteError(null);
+                  }}
+                  placeholder="****"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl px-5 py-3 text-center text-2xl font-black tracking-[0.5em] focus:border-rose-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                />
+                {deleteError && <p className="text-rose-600 dark:text-rose-400 text-[10px] font-bold mt-2 text-center uppercase">{deleteError}</p>}
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button 
+                  onClick={() => { setConfirmDeleteOrg(null); setDeletePinInput(''); setDeleteError(null); }}
+                  className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+                >
+                  Отмена
+                </button>
+                <button 
+                  onClick={handleDeleteOrg}
+                  disabled={saving || deletePinInput.length < 4}
+                  className="flex-1 py-4 bg-rose-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-2xl dark:shadow-slate-900/20 shadow-rose-100 hover:bg-rose-700 transition-all active:scale-95 disabled:opacity-50"
+                >
+                  {saving ? 'Удаление...' : 'Удалить всё'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingOrg && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl dark:shadow-slate-900/40 w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 max-h-[90vh] flex flex-col">
+            <div className="bg-slate-900 dark:bg-slate-950 px-6 py-4 flex justify-between items-center shrink-0">
+              <h3 className="text-white font-bold">Управление организацией</h3>
+              <button onClick={() => setEditingOrg(null)} className="text-slate-400 hover:text-white transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleUpdateOrg} className="flex flex-col flex-1 min-h-0">
+              <div className="p-6 space-y-6 overflow-y-auto flex-1 custom-scrollbar">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Название компании</label>
+                  <input 
+                    type="text"
+                    value={editingOrg.name}
+                    onChange={(e) => setEditingOrg({...editingOrg, name: e.target.value})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Email организации</label>
+                  <input 
+                    type="email"
+                    value={editingOrg.email || ''}
+                    onChange={(e) => setEditingOrg({...editingOrg, email: e.target.value})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Тарифный план</label>
+                    <select 
+                      value={editingOrg.plan}
+                      onChange={(e) => {
+                        const newPlan = e.target.value as PlanType;
+                        let newStatus = editingOrg.status;
+                        let newExpiry = editingOrg.expiryDate;
+                        
+                        // Если меняем на платный тариф, автоматически активируем и убираем просрочку
+                        if (newPlan !== PlanType.FREE && editingOrg.plan === PlanType.FREE) {
+                          newStatus = 'active';
+                          // Если дата в прошлом, сбрасываем её
+                          if (newExpiry && new Date(newExpiry) < new Date()) {
+                            newExpiry = undefined;
+                          }
+                        }
+                        
+                        setEditingOrg({
+                          ...editingOrg, 
+                          plan: newPlan,
+                          status: newStatus,
+                          expiryDate: newExpiry
+                        });
+                      }}
+                      className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                    >
+                      <option value={PlanType.FREE}>FREE</option>
+                      <option value={PlanType.PRO}>PRO</option>
+                      <option value={PlanType.BUSINESS}>BUSINESS</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Статус</label>
+                    <select 
+                      value={editingOrg.status}
+                      onChange={(e) => setEditingOrg({...editingOrg, status: e.target.value as any})}
+                      className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                    >
+                      <option value="active">Active</option>
+                      <option value="trial">Trial</option>
+                      <option value="expired">Expired</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
+                        <Activity className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Режим отладки (Debug)</p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">Показывать техническую информацию работодателю</p>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        className="sr-only peer"
+                        checked={editingOrg.debugEnabled || false}
+                        onChange={(e) => setEditingOrg({...editingOrg, debugEnabled: e.target.checked})}
+                      />
+                      <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Дата истечения (Expiry Date)</label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="date"
+                      value={editingOrg.expiryDate ? editingOrg.expiryDate.split('T')[0] : ''}
+                      onChange={(e) => setEditingOrg({
+                        ...editingOrg, 
+                        expiryDate: e.target.value ? new Date(e.target.value).toISOString() : undefined
+                      })}
+                      className="flex-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                    />
+                    <button 
+                      type="button"
+                      onClick={() => setEditingOrg({...editingOrg, expiryDate: undefined})}
+                      className="px-4 py-2 bg-slate-100 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-200"
+                    >
+                      Сбросить
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">Оставьте пустым для бессрочного тарифа</p>
+                </div>
+
+                <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
+                  <p className="text-xs text-indigo-700 leading-relaxed">
+                    Изменение тарифа мгновенно обновит лимиты (пользователи, оборудование) и доступные функции для всех сотрудников этой организации.
+                  </p>
+                </div>
+
+                {editingAdmin && (
+                  <div className="pt-4 border-t border-slate-100 space-y-4">
+                    <h4 className="text-xs font-black text-slate-900 dark:text-slate-50 uppercase tracking-widest flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                      Данные администратора
+                    </h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="col-span-2">
+                        <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Email администратора</label>
+                        <input 
+                          type="email"
+                          value={editingAdmin.email || ''}
+                          onChange={(e) => setEditingAdmin({...editingAdmin, email: e.target.value})}
+                          placeholder="admin@example.com"
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Пароль (для входа через email)</label>
+                        <input 
+                          type="password"
+                          value={adminPassword}
+                          onChange={(e) => setAdminPassword(e.target.value)}
+                          placeholder="Минимум 6 символов"
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                        />
+                        <p className="text-[9px] text-slate-400 mt-1 ml-1">
+                          Заполните, чтобы создать аккаунт или если админ забыл пароль (только для новых).
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Имя админа</label>
+                        <input 
+                          type="text"
+                          value={editingAdmin.name}
+                          onChange={(e) => setEditingAdmin({...editingAdmin, name: e.target.value})}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">PIN админа</label>
+                        <input 
+                          type="text"
+                          maxLength={4}
+                          value={editingAdmin.pin}
+                          onChange={(e) => setEditingAdmin({...editingAdmin, pin: e.target.value.replace(/[^0-9]/g, '')})}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-center tracking-widest"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-6 border-t border-slate-100 bg-slate-50 shrink-0 flex gap-3">
+                <button 
+                  type="button"
+                  onClick={() => setEditingOrg(null)}
+                  className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 transition-all"
+                >
+                  Отмена
+                </button>
+                <button 
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  Сохранить
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Create Modal */}
+      {isCreating && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl dark:shadow-slate-900/40 w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 max-h-[90vh] flex flex-col">
+            <div className="bg-indigo-600 dark:bg-indigo-900 px-6 py-4 flex justify-between items-center shrink-0">
+              <h3 className="text-white font-bold">Новая организация</h3>
+              <button onClick={() => setIsCreating(false)} className="text-indigo-100 hover:text-white transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleCreateOrg} className="flex flex-col flex-1 min-h-0">
+              <div className="p-6 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Название компании *</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="Напр: ООО Вектор"
+                    value={newOrg.name || ''}
+                    onChange={(e) => setNewOrg({...newOrg, name: e.target.value})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Email организации</label>
+                  <input 
+                    type="email"
+                    placeholder="admin@company.com"
+                    value={newOrg.email || ''}
+                    onChange={(e) => setNewOrg({...newOrg, email: e.target.value})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Уникальный ID (slug) *</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="Напр: vector-llc"
+                  value={newOrg.id || ''}
+                  onChange={(e) => setNewOrg({...newOrg, id: e.target.value.toLowerCase().replace(/\s+/g, '-')})}
+                  className={`w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono text-sm ${newOrg.id === 'demo_org' ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100'}`}
+                />
+                {newOrg.id === 'demo_org' && (
+                  <p className="text-[9px] text-amber-600 dark:text-amber-400 font-bold mt-1 uppercase">⚠️ Внимание: Этот ID зарезервирован для демо-данных</p>
+                )}
+                <p className="text-[10px] text-slate-400 mt-1">Будет использоваться в URL и для входа</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">ID Владельца (Admin ID) *</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="Напр: admin"
+                  value={newOrg.ownerId || ''}
+                  onChange={(e) => setNewOrg({...newOrg, ownerId: e.target.value})}
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Тариф</label>
+                  <select 
+                    value={newOrg.plan}
+                    onChange={(e) => setNewOrg({...newOrg, plan: e.target.value as PlanType})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  >
+                    <option value={PlanType.FREE}>FREE</option>
+                    <option value={PlanType.PRO}>PRO</option>
+                    <option value={PlanType.BUSINESS}>BUSINESS</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Статус</label>
+                  <select 
+                    value={newOrg.status}
+                    onChange={(e) => setNewOrg({...newOrg, status: e.target.value as any})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  >
+                    <option value="active">Active</option>
+                    <option value="trial">Trial</option>
+                    <option value="expired">Expired</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 shrink-0 flex gap-3">
+                <button 
+                  type="button"
+                  onClick={() => setIsCreating(false)}
+                  className="flex-1 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+                >
+                  Отмена
+                </button>
+                <button 
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-indigo-100 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  Создать
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* View Users Modal */}
+      {viewingUsersOrg && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl dark:shadow-slate-900/40 w-full max-w-2xl overflow-hidden border border-slate-200 dark:border-slate-800">
+            <div className="bg-emerald-600 dark:bg-emerald-900 px-6 py-4 flex justify-between items-center">
+              <div>
+                <h3 className="text-white font-bold">Сотрудники: {viewingUsersOrg.name}</h3>
+                <p className="text-[10px] text-emerald-100 dark:text-emerald-300 font-mono uppercase tracking-widest">{viewingUsersOrg.id}</p>
+              </div>
+              <button onClick={() => setViewingUsersOrg(null)} className="text-emerald-100 hover:text-white transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6 max-h-[60vh] overflow-y-auto">
+              {loadingUsers ? (
+                <div className="py-12 text-center">
+                  <RefreshCw className="w-8 h-8 text-emerald-600 dark:text-emerald-400 animate-spin mx-auto mb-4" />
+                  <p className="text-slate-500 dark:text-slate-400">Загрузка списка сотрудников...</p>
+                </div>
+              ) : orgUsers.length === 0 ? (
+                <div className="py-12 text-center text-slate-500 dark:text-slate-400">
+                  В этой организации пока нет сотрудников
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {orgUsers.map(user => (
+                    <div key={user.id} className="p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center gap-4">
+                      <div className="w-10 h-10 bg-white dark:bg-slate-900 rounded-xl flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-bold shadow-md dark:shadow-slate-900/20 border border-slate-100 dark:border-slate-800">
+                        {user.name.charAt(0)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-900 dark:text-slate-50 truncate">{user.name}</p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider">{user.position} • {user.role}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-mono text-slate-400">ID: {user.id}</p>
+                        <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400">PIN: {user.pin}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-6 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex justify-end">
+              <button 
+                onClick={() => setViewingUsersOrg(null)}
+                className="px-6 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-100 dark:hover:bg-slate-700 transition-all"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PIN Reset Confirmation Modal */}
+      {resetPinConfirm && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 w-full max-w-sm overflow-hidden border border-slate-200 dark:border-slate-800 p-8 text-center">
+            <div className="w-16 h-16 bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 rounded-2xl flex items-center justify-center mx-auto mb-6">
+              <RefreshCw className="w-8 h-8" />
+            </div>
+            <h3 className="text-xl font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight mb-2">Сброс пароля</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
+              Вы уверены, что хотите сбросить пароль администратора для организации <span className="font-bold text-slate-900 dark:text-slate-50">{resetPinConfirm.orgId}</span>?
+            </p>
+            
+            <div className="bg-slate-50 dark:bg-slate-800 rounded-2xl p-4 mb-8 border border-slate-100 dark:border-slate-700">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Новый PIN-код</p>
+              <p className="text-4xl font-black text-indigo-600 dark:text-indigo-400 tracking-[0.2em]">{resetPinConfirm.pin}</p>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setResetPinConfirm(null)}
+                className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+              >
+                Отмена
+              </button>
+              <button 
+                onClick={confirmResetPin}
+                disabled={saving}
+                className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/40 shadow-indigo-100 hover:bg-indigo-700 transition-all disabled:opacity-50"
+              >
+                {saving ? '...' : 'Подтвердить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default SuperAdminView;

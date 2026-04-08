@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  @apply bg-slate-50 text-slate-900 transition-colors duration-200;
+}
+
+.dark body {
+  @apply bg-slate-950 text-slate-100;
+}
+
+/* Custom scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e293b;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+@keyframes float {
+  0% { transform: translateY(0) rotate(0deg); opacity: 0; }
+  50% { opacity: 0.5; }
+  100% { transform: translateY(-100px) rotate(360deg); opacity: 0; }
+}
+
+.animate-float {
+  animation: float 5s linear infinite;
+}
+
+@media print {
+  @page {
+    size: landscape;
+    margin: 5mm;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  #employer-matrix-report, #employer-matrix-report *, #employee-calendar-print, #employee-calendar-print * {
+    visibility: visible;
+  }
+
+  #employer-matrix-report {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: auto !important;
+    overflow: visible !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: white !important;
+    color: black !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .flex-1.overflow-auto {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  table {
+    width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+  }
+
+  th, td {
+    border: 1px solid #000 !important;
+    padding: 2px !important;
+    height: auto !important;
+    background: transparent !important;
+    color: #000 !important;
+    font-size: 8px !important;
+  }
+  
+  th {
+      font-size: 10px !important;
+  }
+
+  .sticky {
+    position: static !important;
+  }
+
+  .bg-slate-50, .bg-white, .dark\:bg-slate-900, .dark\:bg-slate-800 {
+    background: transparent !important;
+  }
+
+  .text-slate-900, .text-slate-600, .text-slate-400, .dark\:text-slate-100 {
+    color: #000 !important;
+  }
+
+  /* Ensure rows don't break across pages */
+  tr {
+    page-break-inside: avoid;
+  }
+
+  /* Force monochrome for print */
+  .print-monochrome {
+    filter: grayscale(100%);
+  }
+
+  /* Adjust column widths for print */
+  th:first-child, td:first-child {
+    width: 100px !important;
+    min-width: 100px !important;
+    max-width: 100px !important;
+    word-wrap: break-word !important;
+    white-space: normal !important;
+    line-height: 1.1 !important;
+  }
+
+  th:last-child, td:last-child {
+    width: 40px !important;
+  }
+
+  /* Hide decorative elements */
+  .animate-pulse, .animate-bounce {
+    animation: none !important;
+  }
+}
