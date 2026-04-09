@@ -178,6 +178,17 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                </div>
             </div>
             <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
+               <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Болеют / Отпуск (Сегодня)</h3>
+               <div className="space-y-2">
+                  {dashboardStats.sickOrVacationToday.length > 0 ? dashboardStats.sickOrVacationToday.map((u: User) => (
+                    <div key={u.id} className="flex items-center gap-3 p-2 bg-slate-50 dark:bg-slate-800 rounded-xl">
+                       <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 flex items-center justify-center font-black text-xs">{u.name.charAt(0)}</div>
+                       <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{u.name}</p>
+                    </div>
+                  )) : <p className="text-xs text-slate-400 italic text-center py-4">Все на месте</p>}
+               </div>
+            </div>
+            <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Топ пропусков</h3>
                <div className="space-y-4">
                   {dashboardStats.absenceCounts.length > 0 ? dashboardStats.absenceCounts.map((a: any, i: number) => (

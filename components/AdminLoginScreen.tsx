@@ -31,6 +31,8 @@ const AdminLoginScreen: React.FC = () => {
           setError('Email не подтвержден. Пожалуйста, проверьте почту.');
         } else if (authError.message.includes('Invalid login credentials')) {
           setError('Неверный Email или пароль.');
+        } else if (authError.message === 'Failed to fetch') {
+          setError('Ошибка сети: Не удалось подключиться к серверу. Проверьте настройки Supabase.');
         } else {
           setError(authError.message);
         }
@@ -147,7 +149,7 @@ const AdminLoginScreen: React.FC = () => {
         if (sessionError) {
           console.error('Error getting session after login:', sessionError);
           // If session is invalid, clear it and retry or show error
-          if (sessionError.message.includes('Refresh Token Not Found')) {
+          if (sessionError?.message?.includes('Refresh Token Not Found')) {
             await supabase.auth.signOut();
             setError('Ошибка сессии. Пожалуйста, попробуйте войти снова.');
             setLoading(false);
@@ -175,7 +177,7 @@ const AdminLoginScreen: React.FC = () => {
       const result = await db.fixDatabase();
       if (result.success) {
         alert('База данных успешно обновлена!');
-        window.location.reload();
+        window.location.href = window.location.pathname;
       } else {
         alert('Пожалуйста, выполните этот SQL в панели Supabase SQL Editor:\n\n' + result.sql);
       }

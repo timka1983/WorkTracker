@@ -21,7 +21,6 @@ const LandingPage = React.lazy(() => import('./components/LandingPage'));
 const RegistrationForm = React.lazy(() => import('./components/RegistrationForm'));
 const SuperAdminView = React.lazy(() => import('./components/SuperAdminView'));
 const LoginScreen = React.lazy(() => import('./components/LoginScreen'));
-const AdminLoginScreen = React.lazy(() => import('./components/AdminLoginScreen'));
 
 const APP_VERSION = 'v2.2.0-PRO-SAAS';
 
@@ -42,11 +41,37 @@ const App: React.FC = () => {
 
   const [showRegistration, setShowRegistration] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [birthdayMessage, setBirthdayMessage] = useState<string | null>(null);
   const [employerViewMode, setEmployerViewMode] = useState<'matrix' | 'team' | 'analytics' | 'settings' | 'billing' | 'payroll' | 'support' | 'audit' | 'instructions'>('analytics');
   const [employeeViewMode, setEmployeeViewMode] = useState<'control' | 'matrix'>('control');
   const [unreadSupportMessages, setUnreadSupportMessages] = useState(0);
   const [unreadByOrg, setUnreadByOrg] = useState<Record<string, number>>({});
   const [superAdminTab, setSuperAdminTab] = useState<string>('orgs');
+
+  // Birthday Notification
+  useEffect(() => {
+    if (!appData.users || appData.users.length === 0) return;
+
+    const today = new Date();
+    const todayStr = `${today.getMonth() + 1}-${today.getDate()}`;
+
+    const birthdayUsers = appData.users.filter(u => {
+      if (!u.birthday) return false;
+      const bDate = new Date(u.birthday);
+      return `${bDate.getMonth() + 1}-${bDate.getDate()}` === todayStr;
+    });
+
+    if (birthdayUsers.length > 0) {
+      const lastBirthdayNotified = localStorage.getItem('last_birthday_notified');
+      if (lastBirthdayNotified !== todayStr) {
+        const names = birthdayUsers.map(u => u.name).join(', ');
+        // Используем случайное поздравление из EmployeeView, если бы мы могли его импортировать.
+        // Пока используем простой текст, так как импорт может быть сложным.
+        setBirthdayMessage(`Сегодня день рождения у: ${names}! Поздравляем! 🎉`);
+        localStorage.setItem('last_birthday_notified', todayStr);
+      }
+    }
+  }, [appData.users]);
 
   const handleResetUnread = useCallback(async (orgId?: string) => {
     const now = new Date().toISOString();
@@ -123,14 +148,6 @@ const App: React.FC = () => {
       // but not necessarily reset them until an org is selected
     }
   }, [superAdminTab, auth.currentUser]);
-
-  if (window.location.pathname === '/admin-login') {
-    return (
-      <Suspense fallback={<LoadingScreen />}>
-        <AdminLoginScreen />
-      </Suspense>
-    );
-  }
 
   // Fetch initial unread count
   useEffect(() => {
@@ -263,30 +280,18 @@ const App: React.FC = () => {
 
   const userPermissions = useMemo(() => {
     if (!auth.currentUser) return DEFAULT_PERMISSIONS;
-    console.log('🛡️ Checking permissions for user:', auth.currentUser);
-    if (auth.currentUser.id === 'admin' || auth.currentUser.isAdmin) {
-      console.log('✅ User is full admin (ID admin or isAdmin flag)');
-      return { ...DEFAULT_PERMISSIONS, isFullAdmin: true };
-    }
+    if (auth.currentUser.id === 'admin') return { ...DEFAULT_PERMISSIONS, isFullAdmin: true };
     const pos = appData.positions.find((p: PositionConfig) => p.name === auth.currentUser!.position);
-    console.log('📍 User position:', auth.currentUser!.position, 'Permissions:', pos?.permissions);
     return pos?.permissions || DEFAULT_PERMISSIONS;
   }, [auth.currentUser, appData.positions]);
 
   const isSelectedUserAdmin = useMemo(() => {
     const user = auth.selectedLoginUser;
     if (!user) return false;
-    if (user.id === 'admin' || user.isAdmin) return true;
+    if (user.id === 'admin') return true;
     const pos = appData.positions.find((p: PositionConfig) => p.name === user.position);
     return (pos?.permissions?.isFullAdmin || pos?.permissions?.isLimitedAdmin) ?? false;
   }, [auth.selectedLoginUser, appData.positions]);
-
-  // Diagnostic effect to log all users
-  useEffect(() => {
-    if (appData.users.length > 0) {
-      console.log('👥 Current users in appData:', appData.users.map(u => ({ id: u.id, name: u.name, isAdmin: u.isAdmin, role: u.role })));
-    }
-  }, [appData.users]);
 
   // Check if current user is archived
   useEffect(() => {
@@ -719,7 +724,7 @@ const App: React.FC = () => {
              setPinInput={auth.setPinInput}
              loginError={auth.loginError}
              setLoginError={auth.setLoginError}
-             validateAndLogin={async (pin, user) => await auth.validateAndLogin(pin, appData.users, appData.superAdminPin, appData.globalAdminPin, user)}
+             validateAndLogin={(pin, user) => auth.validateAndLogin(pin, appData.users, appData.superAdminPin, appData.globalAdminPin, user)}
              setShowLanding={auth.setShowLanding}
              setShowResetModal={setShowResetModal}
              currentOrg={appData.currentOrg}
@@ -823,6 +828,12 @@ const App: React.FC = () => {
                setShowResetModal(false);
                appData.initData(true);
             }}
+          />
+        )}
+        {birthdayMessage && (
+          <NotificationModal 
+            message={birthdayMessage} 
+            onClose={() => setBirthdayMessage(null)} 
           />
         )}
         

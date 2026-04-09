@@ -309,7 +309,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             if (error) {
                               console.error('Failed to save notification settings:', error);
                             }
-                          });
+                          }).catch(err => console.error('Error updating org:', err));
                         }
                       }}
                       className="w-4 h-4 rounded accent-blue-600"
@@ -589,7 +589,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                  alert('Ошибка отправки: ' + data.description);
                               }
                            } catch (e) {
-                              alert('Ошибка сети');
+                              alert('Ошибка сети: ' + (e as any).message);
                            }
                         }}
                         className="w-full py-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all flex items-center justify-center gap-2"

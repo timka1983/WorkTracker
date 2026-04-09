@@ -6,7 +6,6 @@ import { STORAGE_KEYS } from '../constants';
 import { Users, Building2, CreditCard, Activity, ShieldCheck, Search, RefreshCw, ExternalLink, Settings2, X, Check, Plus, LayoutGrid, Zap, Briefcase, Save, Camera, Moon, BarChart3, Megaphone, Ticket, Trash2, Database, AlertCircle, PlayCircle, Bell, MessageSquare, History, HelpCircle } from 'lucide-react';
 import { SupportChat } from './employer/SupportChat';
 import { DocumentationView } from './DocumentationView';
-import { useConfirm } from '../contexts/ConfirmContext';
 
 interface SuperAdminViewProps {
   onLogout: () => void;
@@ -25,7 +24,6 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   onResetUnread,
   onTabChange
 }) => {
-  const { confirm } = useConfirm();
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -63,31 +61,6 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [systemConfig, setSystemConfig] = useState<any>(null);
   const [newSuperAdminPin, setNewSuperAdminPin] = useState('');
   const [newGlobalAdminPin, setNewGlobalAdminPin] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
-  const [emailColumnMissing, setEmailColumnMissing] = useState(false);
-
-  useEffect(() => {
-    const checkSchema = async () => {
-      const { error } = await supabase.from('users').select('email').limit(1);
-      if (error && (error.code === '42703' || error.message?.includes('column'))) {
-        setEmailColumnMissing(true);
-      }
-    };
-    checkSchema();
-  }, []);
-
-  const handleFixDatabase = async () => {
-    setLoading(true);
-    const result = await db.fixDatabase();
-    if (result.success) {
-      alert('База данных успешно обновлена!');
-      setEmailColumnMissing(false);
-      window.location.reload();
-    } else {
-      alert('Не удалось исправить автоматически. Пожалуйста, выполните SQL:\n\n' + result.sql);
-    }
-    setLoading(false);
-  };
 
   // Reset unread count when entering support view or changing selected org
   useEffect(() => {
@@ -118,7 +91,6 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
       { id: 'plans', name: 'Тарифные планы', status: 'pending', description: 'Проверка доступа к таблице тарифов' },
       { id: 'storage', name: 'Хранилище (Фото)', status: 'pending', description: 'Проверка доступа к bucket "photos"' },
       { id: 'pwa', name: 'PWA / Service Worker', status: 'pending', description: 'Проверка регистрации сервис-воркера' },
-      { id: 'db_schema', name: 'Схема базы данных (Email)', status: 'pending', description: 'Проверка наличия колонки email в таблице users' },
     ];
     setAppTests(tests);
 
@@ -129,7 +101,9 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         let errorMsg = '';
         
         if (test.id === 'supabase') {
-          success = await db.checkConnection();
+          const conn = await db.checkConnection();
+          success = conn.isConnected;
+          if (!success) errorMsg = conn.error || 'Ошибка подключения';
         } else if (!db.isConfigured()) {
           success = false;
           errorMsg = 'Supabase не настроен';
@@ -164,10 +138,6 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         } else if (test.id === 'pwa') {
           success = 'serviceWorker' in navigator;
           if (!success) errorMsg = 'Service Worker не поддерживается';
-        } else if (test.id === 'db_schema') {
-          const { error } = await supabase.from('users').select('email').limit(1);
-          success = !error;
-          if (error) errorMsg = 'Колонка email отсутствует. Нажмите "Исправить"';
         }
 
         tests[i] = { ...test, status: success ? 'success' : 'error', error: errorMsg };
@@ -210,13 +180,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     }
   };
 
-  const handleHardReset = async () => {
-    const confirmed = await confirm({
-      title: 'Очистка кэша',
-      message: 'Это полностью очистит локальный кэш и перезагрузит приложение. Продолжить?',
-      type: 'warning'
-    });
-    if (!confirmed) return;
+  const handleHardReset = () => {
+    if (!confirm('Это полностью очистит локальный кэш и перезагрузит приложение. Продолжить?')) return;
     const orgId = localStorage.getItem(STORAGE_KEYS.ORG_ID);
     localStorage.clear();
     const nextUrl = orgId ? `/?org_switch=${orgId}&reset=${Date.now()}` : `/?reset=${Date.now()}`;
@@ -348,43 +313,12 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     const fetchAdmin = async () => {
       if (editingOrg) {
         setLoadingUsers(true);
-        console.log('Fetching admin for org:', editingOrg.id);
-        
-        // Check if email column exists
-        const { data: colData, error: colError } = await supabase
-          .from('users')
-          .select('email')
-          .limit(1);
-        
-        if (colError && (colError.code === '42703' || colError.message?.includes('column'))) {
-          console.warn('Email column is missing in users table');
-          setEmailColumnMissing(true);
-        } else {
-          setEmailColumnMissing(false);
-        }
-
         const users = await db.getUsers(editingOrg.id);
-        
-        if (users === null) {
-          console.error('Failed to fetch users - check Supabase connection and RLS');
-        }
-
-        // Look for admin: 
-        // 1. Try to find a user with an email (real account)
-        // 2. Try to find by position 'Администратор'
-        // 3. Fallback to 'admin' ID
-        const admin = users?.find(u => u.email && (u.isAdmin || u.position === 'Администратор')) ||
-                      users?.find(u => u.position === 'Администратор' && u.id !== 'admin') ||
-                      users?.find(u => u.isAdmin && u.id !== 'admin') ||
-                      users?.find(u => u.id === 'admin');
-        
-        console.log('Found admin:', JSON.stringify(admin, null, 2));
+        const admin = users?.find(u => u.id === 'admin');
         setEditingAdmin(admin || null);
-        setAdminPassword('');
         setLoadingUsers(false);
       } else {
         setEditingAdmin(null);
-        setAdminPassword('');
       }
     };
     fetchAdmin();
@@ -414,77 +348,12 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
       // Update Admin if changed
       if (editingAdmin) {
-        console.log('Saving admin data:', editingAdmin);
-        const { error: upsertError } = await db.upsertUser(editingAdmin, editingOrg.id);
-        
-        if (upsertError) {
-          console.error('Admin upsert failed:', upsertError);
-          const err = upsertError as any;
-          if (err.code === '42703' || err.message?.includes('column')) {
-            alert('ВНИМАНИЕ: Данные администратора сохранены БЕЗ Email, так как колонка email отсутствует в базе данных. Пожалуйста, выполните SQL-запрос в Diagnostics.');
-          } else {
-            alert('Ошибка сохранения администратора: ' + err.message);
-          }
-        }
-        
-        // If email and password are provided, try to create/update Supabase Auth account
-        if (editingAdmin.email && adminPassword) {
-          console.log('Attempting to create/update Auth account for:', editingAdmin.email);
-          try {
-            const { data: authData, error: signUpError } = await supabase.auth.signUp({
-              email: editingAdmin.email,
-              password: adminPassword,
-              options: {
-                data: {
-                  name: editingAdmin.name,
-                  organizationId: editingOrg.id,
-                  isAdmin: true,
-                  position: 'Администратор'
-                }
-              }
-            });
-            
-            if (signUpError) {
-              if (signUpError.message.includes('Refresh Token Not Found')) {
-                await supabase.auth.signOut();
-                alert('Проблема с сессией. Пожалуйста, попробуйте еще раз.');
-                setSaving(false);
-                return;
-              }
-              if (signUpError.message.includes('already registered')) {
-                console.log('Admin already has an auth account');
-                alert('Аккаунт с таким Email уже существует. Данные профиля обновлены.');
-              } else {
-                console.error('Error creating auth account:', signUpError);
-                alert('Ошибка авторизации: ' + signUpError.message);
-              }
-            } else if (authData.user) {
-              // LINKING: If we just created a new Auth account for an 'admin' ID user,
-              // we should update the record in the users table to use the new UUID.
-              if (editingAdmin.id === 'admin') {
-                console.log('Linking "admin" record to new UUID:', authData.user.id);
-                const linkedAdmin = { ...editingAdmin, id: authData.user.id };
-                const { error: linkError } = await db.upsertUser(linkedAdmin, editingOrg.id);
-                
-                if (!linkError) {
-                  // ONLY delete the old record if the new one was successfully created
-                  await supabase.from('users').delete().eq('id', 'admin').eq('organization_id', editingOrg.id);
-                  console.log('Old "admin" record deleted successfully');
-                } else {
-                  console.error('Failed to create linked admin record:', linkError);
-                }
-              }
-              alert('Аккаунт администратора готов. Проверьте почту ' + editingAdmin.email + ' для подтверждения.');
-            }
-          } catch (authErr) {
-            console.error('Auth error:', authErr);
-          }
-        }
+        await db.upsertUser(editingAdmin, editingOrg.id);
       }
       
       setOrganizations(prev => prev.map(o => o.id === editingOrg.id ? editingOrg : o));
       setEditingOrg(null);
-      alert('Изменения успешно сохранены');
+      alert('Организация и администратор успешно обновлены');
     } catch (error) {
       console.error('Error updating org:', error);
       alert('Произошла ошибка при сохранении');
@@ -677,12 +546,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
       alert('Нельзя удалить промокод, который уже был использован');
       return;
     }
-    const confirmed = await confirm({
-      title: 'Удаление промокода',
-      message: 'Удалить этот промокод?',
-      type: 'danger'
-    });
-    if (!confirmed) return;
+    if (!confirm('Удалить этот промокод?')) return;
     try {
       await db.deletePromoCode(id);
       setPromoCodes(prev => prev.filter(p => p.id !== id));
@@ -802,28 +666,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         </header>
 
         <div className="max-w-7xl mx-auto px-8 py-8">
-          {/* Database Schema Warning */}
-        {emailColumnMissing && (
-          <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl flex items-center justify-between">
-            <div className="flex items-center gap-3 text-amber-800 dark:text-amber-200">
-              <AlertCircle className="w-5 h-5" />
-              <div>
-                <p className="font-bold">Обнаружена проблема со схемой БД</p>
-                <p className="text-sm opacity-80 text-amber-700 dark:text-amber-300">Отсутствует колонка "email" в таблице "users". Это может мешать входу администраторов.</p>
-              </div>
-            </div>
-            <button 
-              onClick={handleFixDatabase}
-              disabled={loading}
-              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-bold transition-colors flex items-center gap-2"
-            >
-              <Database className="w-4 h-4" />
-              {loading ? 'Исправление...' : 'Исправить сейчас'}
-            </button>
-          </div>
-        )}
-
-        {activeTab === 'orgs' ? (
+          {activeTab === 'orgs' ? (
           <>
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
@@ -905,6 +748,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Статус</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Пользователи</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Создан</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Счёт</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">ID</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Действия</th>
                     </tr>
@@ -913,14 +757,14 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     {loading ? (
                       Array(5).fill(0).map((_, i) => (
                         <tr key={i} className="animate-pulse">
-                          <td colSpan={6} className="px-6 py-4">
+                        <td colSpan={8} className="px-6 py-4">
                             <div className="h-4 bg-slate-100 dark:bg-slate-800 rounded w-full"></div>
                           </td>
                         </tr>
                       ))
                     ) : filteredOrgs.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-12 text-center text-slate-500 dark:text-slate-400">
+                      <tr key="no-orgs">
+                        <td colSpan={7} className="px-6 py-12 text-center text-slate-500 dark:text-slate-400">
                           Организации не найдены
                         </td>
                       </tr>
@@ -947,9 +791,9 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           </td>
                           <td className="px-6 py-4">
                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                              org.plan === PlanType.BUSINESS ? 'bg-purple-100 text-purple-700' :
-                              org.plan === PlanType.PRO ? 'bg-blue-100 text-blue-700 dark:text-blue-300' :
-                              'bg-slate-100 text-slate-700 dark:text-slate-200'
+                              org.plan === PlanType.BUSINESS ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300' :
+                              org.plan === PlanType.PRO ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
+                              'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
                             }`}>
                               {org.plan}
                             </span>
@@ -976,8 +820,17 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                             </div>
                           </td>
                           <td className="px-6 py-4">
+                            {org.invoiceRequested ? (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                                Запрошен
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
                             <div className="flex flex-col gap-1">
-                              <code className={`text-xs px-2 py-1 rounded font-mono w-fit ${org.id === 'demo_org' ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-600 dark:text-slate-300'}`}>
+                              <code className={`text-xs px-2 py-1 rounded font-mono w-fit ${org.id === 'demo_org' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}>
                                 {org.id}
                               </code>
                               {org.id === 'demo_org' && (
@@ -989,47 +842,35 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                             <div className="flex items-center justify-end gap-1">
                               <button 
                                 onClick={() => handleViewUsers(org)}
-                                className="p-2 text-slate-400 hover:text-emerald-600 dark:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50"
+                                className="p-2 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
                                 title="Посмотреть сотрудников"
                               >
                                 <Users className="w-4 h-4" />
                               </button>
                               <button 
                                 onClick={() => handleResetAdminPin(org.id)}
-                                className="p-2 text-slate-400 hover:text-amber-600 dark:text-amber-400 transition-colors rounded-lg hover:bg-amber-50"
+                                className="p-2 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30"
                                 title="Сбросить пароль админа"
                               >
                                 <RefreshCw className="w-4 h-4" />
                               </button>
                               <button 
                                 onClick={() => setEditingOrg(org)}
-                                className="p-2 text-slate-400 hover:text-indigo-600 dark:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-50"
+                                className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
                                 title="Управление тарифом"
                               >
                                 <Settings2 className="w-4 h-4" />
                               </button>
                               <button 
                                 onClick={() => handleSwitchToOrg(org.id)}
-                                className="p-2 text-slate-400 hover:text-indigo-600 dark:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-50"
+                                className="p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
                                 title="Войти в организацию"
                               >
                                 <ExternalLink className="w-4 h-4" />
                               </button>
                               <button 
-                                onClick={() => {
-                                  // Set the org ID and then redirect to the login page as the admin user
-                                  localStorage.setItem(STORAGE_KEYS.ORG_ID, org.id);
-                                  localStorage.setItem(STORAGE_KEYS.LAST_USER_ID, 'admin');
-                                  window.location.replace('/');
-                                }}
-                                className="p-2 text-slate-400 hover:text-emerald-600 dark:text-emerald-400 transition-colors rounded-lg hover:bg-emerald-50"
-                                title="Войти как администратор"
-                              >
-                                <ShieldCheck className="w-4 h-4" />
-                              </button>
-                              <button 
                                 onClick={() => setConfirmDeleteOrg(org)}
-                                className="p-2 text-slate-400 hover:text-rose-600 dark:text-rose-400 transition-colors rounded-lg hover:bg-rose-50"
+                                className="p-2 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors rounded-lg hover:bg-rose-50 dark:hover:bg-rose-900/30"
                                 title="Удалить организацию"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -1044,11 +885,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               </div>
             </div>
             
-            <div className="mt-8 pt-8 border-t border-slate-200 flex flex-col items-center">
+            <div className="mt-8 pt-8 border-t border-slate-200 dark:border-slate-800 flex flex-col items-center">
               <p className="text-[10px] text-slate-400 font-bold uppercase mb-4">Проблемы с синхронизацией на мобильном?</p>
               <button 
                 onClick={handleHardReset}
-                className="flex items-center gap-2 px-6 py-3 bg-slate-100 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-rose-50 hover:text-rose-600 dark:text-rose-400 transition-all text-xs font-black uppercase tracking-widest border border-slate-200"
+                className="flex items-center gap-2 px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-rose-50 dark:hover:bg-rose-900/30 hover:text-rose-600 dark:hover:text-rose-400 transition-all text-xs font-black uppercase tracking-widest border border-slate-200 dark:border-slate-700"
               >
                 <Trash2 className="w-4 h-4" />
                 Очистить кэш и перезагрузить
@@ -1070,7 +911,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           </div>
         ) : activeTab === ('system' as any) ? (
           <div className="max-w-2xl mx-auto space-y-8 animate-fadeIn">
-            <div className="bg-white rounded-[2.5rem] shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden">
+            <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden">
               <div className="p-8 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
                 <h3 className="text-xl font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight">Безопасность системы</h3>
                 <p className="text-sm text-slate-500 dark:text-slate-400">Настройки доступа к панели Супер-Администратора</p>
@@ -1124,7 +965,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           <div className="space-y-8 animate-fadeIn">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               {plans.map((plan) => (
-                <div key={plan.type} className="bg-white rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden flex flex-col">
+                <div key={plan.type} className="bg-white dark:bg-slate-900 rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
                   <div className={`p-6 text-white ${
                     plan.type === PlanType.BUSINESS ? 'bg-purple-600' :
                     plan.type === PlanType.PRO ? 'bg-indigo-600' :
@@ -1157,15 +998,15 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-slate-100 space-y-3">
+                    <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
                       <div className="flex items-center gap-3 text-sm">
-                        <div className={`p-1 rounded-md ${plan.limits.features.photoCapture ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                        <div className={`p-1 rounded-md ${plan.limits.features.photoCapture ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-400'}`}>
                           <Camera className="w-4 h-4" />
                         </div>
                         <span className={plan.limits.features.photoCapture ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Фотофиксация</span>
                       </div>
                       <div className="flex items-center gap-3 text-sm">
-                        <div className={`p-1 rounded-md ${plan.limits.features.nightShift ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 text-slate-400'}`}>
+                        <div className={`p-1 rounded-md ${plan.limits.features.nightShift ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-400'}`}>
                           <Moon className="w-4 h-4" />
                         </div>
                         <span className={plan.limits.features.nightShift ? 'text-slate-700 dark:text-slate-200 font-medium' : 'text-slate-400'}>Ночные смены</span>
@@ -1210,7 +1051,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
                     <button 
                       onClick={() => setEditingPlan(plan)}
-                      className="w-full py-3 bg-slate-50 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-100 transition-all border border-slate-200 flex items-center justify-center gap-2"
+                      className="w-full py-3 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-100 dark:hover:bg-slate-700 transition-all border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2"
                     >
                       <Settings2 className="w-4 h-4" />
                       Редактировать
@@ -1220,13 +1061,13 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               ))}
             </div>
 
-            <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 flex items-start gap-4">
-              <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+            <div className="bg-indigo-50 dark:bg-indigo-900/20 p-6 rounded-3xl border border-indigo-100 dark:border-indigo-800/30 flex items-start gap-4">
+              <div className="p-3 bg-white dark:bg-slate-800 rounded-2xl shadow-md dark:shadow-slate-900/20">
                 <ShieldCheck className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
               </div>
               <div>
-                <h4 className="font-bold text-indigo-900 mb-1">Совет супер-админу</h4>
-                <p className="text-sm text-indigo-700 leading-relaxed">
+                <h4 className="font-bold text-indigo-900 dark:text-indigo-100 mb-1">Совет супер-админу</h4>
+                <p className="text-sm text-indigo-700 dark:text-indigo-300 leading-relaxed">
                   Изменения в конструкторе тарифов применяются мгновенно ко всем организациям, использующим данный тариф. 
                   Будьте осторожны при уменьшении лимитов, так как это может ограничить функционал уже работающих клиентов.
                 </p>
@@ -1235,7 +1076,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           </div>
         ) : activeTab === 'app_diagnostics' ? (
           <div className="space-y-8 animate-fadeIn">
-            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-md dark:shadow-slate-900/20">
+            <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
               <div className="flex justify-between items-center mb-8">
                 <div>
                   <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">Диагностика функций приложения</h3>
@@ -1255,16 +1096,16 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 {appTests.length > 0 ? (
                   appTests.map((test) => (
                     <div key={test.id} className={`p-5 rounded-2xl border transition-all ${
-                      test.status === 'success' ? 'bg-emerald-50 border-emerald-100' : 
-                      test.status === 'error' ? 'bg-rose-50 border-rose-100' : 
-                      'bg-slate-50 border-slate-200'
+                      test.status === 'success' ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800/30' : 
+                      test.status === 'error' ? 'bg-rose-50 dark:bg-rose-900/20 border-rose-100 dark:border-rose-800/30' : 
+                      'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                     }`}>
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-3">
                           <div className={`p-2 rounded-lg ${
-                            test.status === 'success' ? 'bg-emerald-100 text-emerald-600 dark:text-emerald-400' : 
-                            test.status === 'error' ? 'bg-rose-100 text-rose-600 dark:text-rose-400' : 
-                            'bg-white text-slate-400'
+                            test.status === 'success' ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' : 
+                            test.status === 'error' ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400' : 
+                            'bg-white dark:bg-slate-800 text-slate-400'
                           }`}>
                             {test.status === 'success' ? <Check className="w-4 h-4" /> : 
                              test.status === 'error' ? <AlertCircle className="w-4 h-4" /> : 
@@ -1276,38 +1117,36 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           </div>
                         </div>
                         <div className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
-                          test.status === 'success' ? 'bg-emerald-200 text-emerald-700' : 
-                          test.status === 'error' ? 'bg-rose-200 text-rose-700' : 
-                          'bg-slate-200 text-slate-500 dark:text-slate-400'
+                          test.status === 'success' ? 'bg-emerald-200 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300' : 
+                          test.status === 'error' ? 'bg-rose-200 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300' : 
+                          'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
                         }`}>
                           {test.status === 'success' ? 'OK' : test.status === 'error' ? 'Ошибка' : 'Ожидание'}
                         </div>
                       </div>
                       <p className="text-xs text-slate-600 dark:text-slate-300 mb-2">{test.description}</p>
                       {test.error && (
-                        <div className="mt-2 p-2 bg-white/50 rounded-lg border border-rose-200">
+                        <div className="mt-2 p-2 bg-white/50 dark:bg-slate-900/50 rounded-lg border border-rose-200 dark:border-rose-800/30">
                           <p className="text-[10px] text-rose-600 dark:text-rose-400 font-mono break-all">{test.error}</p>
                         </div>
                       )}
                     </div>
                   ))
                 ) : (
-                  <div className="col-span-full py-12 text-center border-2 border-dashed border-slate-200 rounded-3xl">
-                    <Activity className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+                  <div className="col-span-full py-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-3xl">
                     <p className="text-slate-400">Нажмите "Запустить тесты" для начала диагностики</p>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 flex items-start gap-4">
-              <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+            <div className="bg-amber-50 dark:bg-amber-900/20 p-6 rounded-3xl border border-amber-100 dark:border-amber-800/30 flex items-start gap-4">
+              <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl shadow-md dark:shadow-slate-900/20">
                 <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400" />
               </div>
               <div>
-                <h4 className="font-bold text-amber-900 mb-1">О диагностике функций</h4>
-                <p className="text-sm text-amber-700 leading-relaxed">
-                  Эта панель проверяет не только наличие таблиц, но и корректность работы бизнес-логики приложения. 
+                <h4 className="font-bold text-amber-900 dark:text-amber-100 mb-1">О диагностике функций</h4>
+                <p className="text-sm text-amber-700 dark:text-amber-300 leading-relaxed">
                   Если какой-то тест завершился с ошибкой, это может означать отсутствие необходимых прав доступа (RLS), 
                   ошибки в структуре данных или проблемы с конфигурацией Supabase.
                 </p>
@@ -1316,7 +1155,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           </div>
         ) : activeTab === 'diagnostics' ? (
           <div className="space-y-8 animate-fadeIn">
-            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-md dark:shadow-slate-900/20">
+            <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
               <div className="flex justify-between items-center mb-8">
                 <div>
                   <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">Диагностика Supabase</h3>
@@ -1347,7 +1186,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                         alert('Все ошибки скопированы в буфер обмена');
                       }
                     }}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 transition-all font-bold text-sm"
+                    className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all font-bold text-sm"
                   >
                     <Save className="w-4 h-4" />
                     Скопировать ошибки
@@ -1367,14 +1206,14 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 <div className="space-y-8">
                   {/* Config Section */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className={`p-6 rounded-2xl border ${diagnostics.config.urlSet ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'}`}>
+                    <div className={`p-6 rounded-2xl border ${diagnostics.config.urlSet ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800/30' : 'bg-rose-50 dark:bg-rose-900/20 border-rose-100 dark:border-rose-800/30'}`}>
                       <div className="flex items-center gap-3 mb-2">
                         {diagnostics.config.urlSet ? <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" /> : <X className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
                         <span className="font-bold text-slate-900 dark:text-slate-50">VITE_SUPABASE_URL</span>
                       </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400">{diagnostics.config.urlSet ? 'Настроен корректно' : 'Не найден или содержит значение по умолчанию'}</p>
                     </div>
-                    <div className={`p-6 rounded-2xl border ${diagnostics.config.keySet ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'}`}>
+                    <div className={`p-6 rounded-2xl border ${diagnostics.config.keySet ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800/30' : 'bg-rose-50 dark:bg-rose-900/20 border-rose-100 dark:border-rose-800/30'}`}>
                       <div className="flex items-center gap-3 mb-2">
                         {diagnostics.config.keySet ? <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" /> : <X className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
                         <span className="font-bold text-slate-900 dark:text-slate-50">VITE_SUPABASE_ANON_KEY</span>
@@ -1385,11 +1224,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
                   {/* Overall Status */}
                   {diagnostics.status === 'error' && (
-                    <div className="p-6 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-4">
+                    <div className="p-6 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800/30 rounded-2xl flex items-start gap-4">
                       <X className="w-6 h-6 text-rose-600 dark:text-rose-400 flex-shrink-0" />
                       <div>
-                        <h4 className="font-bold text-rose-900">Критическая ошибка</h4>
-                        <p className="text-sm text-rose-700">{diagnostics.message}</p>
+                        <h4 className="font-bold text-rose-900 dark:text-rose-100">Критическая ошибка</h4>
+                        <p className="text-sm text-rose-700 dark:text-rose-300">{diagnostics.message}</p>
                       </div>
                     </div>
                   )}
@@ -1399,7 +1238,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 uppercase tracking-wider">Статус таблиц</h4>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                       {Object.entries(diagnostics.tables || {}).map(([table, status]: [string, any]) => (
-                        <div key={table} className={`p-4 rounded-xl border ${status.status === 'ok' ? 'bg-white border-slate-200' : 'bg-rose-50 border-rose-200'}`}>
+                        <div key={table} className={`p-4 rounded-xl border ${status.status === 'ok' ? 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700' : 'bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800/30'}`}>
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-200">{table}</span>
                             {status.status === 'ok' ? <Check className="w-4 h-4 text-emerald-500" /> : <X className="w-4 h-4 text-rose-500" />}
@@ -1418,7 +1257,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                       <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 uppercase tracking-wider">Хранилище (Storage)</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                         {Object.entries(diagnostics.storage).map(([bucket, status]: [string, any]) => (
-                          <div key={bucket} className={`p-4 rounded-xl border ${status.status === 'ok' ? 'bg-white border-slate-200' : 'bg-rose-50 border-rose-200'}`}>
+                          <div key={bucket} className={`p-4 rounded-xl border ${status.status === 'ok' ? 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700' : 'bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800/30'}`}>
                             <div className="flex items-center justify-between mb-2">
                               <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-200">Bucket: {bucket}</span>
                               {status.status === 'ok' ? <Check className="w-4 h-4 text-emerald-500" /> : <X className="w-4 h-4 text-rose-500" />}
@@ -1431,12 +1270,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                                 <div className="flex gap-2">
                                   <button
                                     onClick={async () => {
-                                      const confirmed = await confirm({
-                                        title: 'Создание бакета',
-                                        message: `Попытаться создать бакет "${bucket}" через API?`,
-                                        type: 'info'
-                                      });
-                                      if (!confirmed) return;
+                                      if (!confirm(`Попытаться создать бакет "${bucket}" через API?`)) return;
                                       const { error } = await db.createBucket(bucket);
                                       if (error) {
                                         const msg = typeof error === 'string' ? error : error.message;
@@ -1465,23 +1299,23 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                       <h4 className="text-sm font-bold text-slate-900 dark:text-slate-50 mb-4 uppercase tracking-wider">Статус полей (колонок)</h4>
                       {Object.values(diagnostics.columns).every(status => status === 'ok') && 
                        Object.values(diagnostics.tables).every((status: any) => status.status === 'ok') ? (
-                        <div className="p-4 rounded-xl border bg-emerald-50 border-emerald-200 flex items-center gap-3">
+                        <div className="p-4 rounded-xl border bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800/30 flex items-center gap-3">
                           <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-                          <span className="text-sm font-bold text-emerald-900">Диагностика проведена - все поля и колонки в порядке</span>
+                          <span className="text-sm font-bold text-emerald-900 dark:text-emerald-100">Диагностика проведена - все поля и колонки в порядке</span>
                         </div>
                       ) : (
                         <div className="space-y-4">
                           {Object.values(diagnostics.columns).every(status => status === 'ok') && (
-                             <div className="p-4 rounded-xl border bg-amber-50 border-amber-200 flex items-center gap-3">
+                             <div className="p-4 rounded-xl border bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/30 flex items-center gap-3">
                                <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-                               <span className="text-sm font-bold text-amber-900">Колонки в существующих таблицах в порядке, но обнаружены ошибки в таблицах выше.</span>
+                               <span className="text-sm font-bold text-amber-900 dark:text-amber-100">Колонки в существующих таблицах в порядке, но обнаружены ошибки в таблицах выше.</span>
                              </div>
                           )}
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                             {Object.entries(diagnostics.columns)
                               .filter(([_, status]) => status === 'missing')
                               .map(([col, status]: [string, any]) => (
-                              <div key={col} className="p-4 rounded-xl border bg-amber-50 border-amber-200">
+                              <div key={col} className="p-4 rounded-xl border bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/30">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] font-mono font-bold text-slate-700 dark:text-slate-200">{col}</span>
                                   <X className="w-3 h-3 text-amber-500" />
@@ -1507,7 +1341,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                             sqlFixes: [fullSchema]
                           }));
                         }}
-                        className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 dark:text-slate-300 px-3 py-1 rounded-lg font-bold transition-all"
+                        className="text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 px-3 py-1 rounded-lg font-bold transition-all"
                       >
                         Сформировать полный SQL запрос
                       </button>
@@ -1532,38 +1366,38 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                         </pre>
                       </div>
                     ) : (
-                      <div className="p-8 border-2 border-dashed border-slate-200 rounded-2xl text-center">
+                      <div className="p-8 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl text-center">
                         <p className="text-sm text-slate-400">Автоматических исправлений не требуется. Нажмите кнопку выше, чтобы получить полный SQL-запрос для развертывания.</p>
                       </div>
                     )}
                   </div>
 
                   {diagnostics.status === 'partial' && (
-                    <div className="p-6 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-4">
+                    <div className="p-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-2xl flex items-start gap-4">
                       <Activity className="w-6 h-6 text-amber-600 dark:text-amber-400 flex-shrink-0" />
                       <div>
-                        <h4 className="font-bold text-amber-900">Частичная доступность</h4>
-                        <p className="text-sm text-amber-700">Некоторые таблицы отсутствуют или недоступны. Убедитесь, что вы выполнили все SQL-миграции в панели Supabase.</p>
+                        <h4 className="font-bold text-amber-900 dark:text-amber-100">Частичная доступность</h4>
+                        <p className="text-sm text-amber-700 dark:text-amber-300">Некоторые таблицы отсутствуют или недоступны. Убедитесь, что вы выполнили все SQL-миграции в панели Supabase.</p>
                       </div>
                     </div>
                   )}
                 </div>
               ) : (
                 <div className="py-20 text-center">
-                  <RefreshCw className="w-10 h-10 text-slate-200 animate-spin mx-auto mb-4" />
+                  <RefreshCw className="w-10 h-10 text-slate-200 dark:text-slate-700 animate-spin mx-auto mb-4" />
                   <p className="text-slate-400">Выполняется диагностика...</p>
                 </div>
               )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 flex items-start gap-4">
-                <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+              <div className="bg-indigo-50 dark:bg-indigo-900/20 p-6 rounded-3xl border border-indigo-100 dark:border-indigo-800/30 flex items-start gap-4">
+                <div className="p-3 bg-white dark:bg-slate-800 rounded-2xl shadow-md dark:shadow-slate-900/20">
                   <ShieldCheck className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-indigo-900 mb-1">Как исправить ошибки?</h4>
-                  <ul className="text-sm text-indigo-700 space-y-2 list-disc ml-4 mt-2">
+                  <h4 className="font-bold text-indigo-900 dark:text-indigo-100 mb-1">Как исправить ошибки?</h4>
+                  <ul className="text-sm text-indigo-700 dark:text-indigo-300 space-y-2 list-disc ml-4 mt-2">
                     <li>Проверьте переменные окружения в настройках AI Studio.</li>
                     <li>Убедитесь, что в Supabase созданы все таблицы (organizations, users, work_logs, machines, positions, plans, promo_codes, active_shifts, system_config).</li>
                     <li>Если отсутствует колонка (column does not exist), используйте SQL-запрос <code>ALTER TABLE имя_таблицы ADD COLUMN имя_колонки ТИП;</code></li>
@@ -1572,13 +1406,13 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 </div>
               </div>
 
-              <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 flex items-start gap-4">
-                <div className="p-3 bg-white rounded-2xl shadow-md dark:shadow-slate-900/20">
+              <div className="bg-amber-50 dark:bg-amber-900/20 p-6 rounded-3xl border border-amber-100 dark:border-amber-800/30 flex items-start gap-4">
+                <div className="p-3 bg-white dark:bg-slate-800 rounded-2xl shadow-md dark:shadow-slate-900/20">
                   <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-amber-900 mb-1">Советы по SQL</h4>
-                  <p className="text-sm text-amber-700 leading-relaxed">
+                  <h4 className="font-bold text-amber-900 dark:text-amber-100 mb-1">Советы по SQL</h4>
+                  <p className="text-sm text-amber-700 dark:text-amber-300 leading-relaxed">
                     Если автоматический SQL не помог, нажмите <b>"Сформировать полный SQL запрос"</b>. 
                     Скопируйте его и вставьте в <b>SQL Editor</b> в панели Supabase. 
                     Это гарантированно создаст все нужные структуры.
@@ -1592,9 +1426,9 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {/* Promo Code Creation */}
               <div className="lg:col-span-1">
-                <div className="bg-white p-6 rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 sticky top-24">
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-700 sticky top-24">
                   <div className="flex items-center gap-3 mb-6">
-                    <div className="p-2 bg-indigo-50 rounded-lg">
+                    <div className="p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg">
                       <Ticket className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                     </div>
                     <h3 className="font-bold text-slate-900 dark:text-slate-50">Создать промокод</h3>
@@ -1609,7 +1443,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                         placeholder="PROMO14"
                         value={newPromo.code || ''}
                         onChange={(e) => setNewPromo({...newPromo, code: e.target.value.toUpperCase()})}
-                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono text-slate-900 dark:text-slate-100"
                       />
                     </div>
 
@@ -1619,7 +1453,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                         <select 
                           value={newPromo.planType}
                           onChange={(e) => setNewPromo({...newPromo, planType: e.target.value as PlanType})}
-                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                          className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
                         >
                           <option value={PlanType.PRO}>PRO</option>
                           <option value={PlanType.BUSINESS}>BUSINESS</option>
@@ -1633,7 +1467,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           min="1"
                           value={newPromo.durationDays || ''}
                           onChange={(e) => setNewPromo({...newPromo, durationDays: parseInt(e.target.value)})}
-                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                          className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
                         />
                       </div>
                     </div>
@@ -1646,7 +1480,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                         min="1"
                         value={newPromo.maxUses || ''}
                         onChange={(e) => setNewPromo({...newPromo, maxUses: parseInt(e.target.value)})}
-                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
                       />
                     </div>
 
@@ -1665,22 +1499,22 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               {/* Promo Codes List & Trial Activation */}
               <div className="lg:col-span-2 space-y-8">
                 {/* Active Promo Codes */}
-                <div className="bg-white rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden">
-                  <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex justify-between items-center">
                     <h3 className="font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
                       <Ticket className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       Активные промокоды
                     </h3>
-                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-100 px-2 py-1 rounded-full">{promoCodes.length}</span>
+                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-full">{promoCodes.length}</span>
                   </div>
-                  <div className="divide-y divide-slate-100">
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
                     {promoCodes.length === 0 ? (
                       <div className="p-12 text-center text-slate-500 dark:text-slate-400">Промокоды не созданы</div>
                     ) : (
                       promoCodes.map((promo) => (
-                        <div key={promo.id} className="p-4 hover:bg-slate-50 transition-colors flex items-center justify-between">
+                        <div key={promo.id} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors flex items-center justify-between">
                           <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-black text-xs">
+                            <div className="w-12 h-12 bg-indigo-100 dark:bg-indigo-900/30 rounded-xl flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-black text-xs">
                               {promo.code.substring(0, 3)}
                             </div>
                             <div>
@@ -1709,8 +1543,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 </div>
 
                 {/* Trial Activation for Clients */}
-                <div className="bg-white rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 overflow-hidden">
-                  <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
                     <h3 className="font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
                       <Zap className="w-5 h-5 text-amber-500" />
                       Быстрая активация Trial
@@ -1724,12 +1558,12 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                         placeholder="Найти клиента для активации..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 dark:text-slate-100"
                       />
                     </div>
                     <div className="space-y-3">
                       {filteredOrgs.slice(0, 5).map(org => (
-                        <div key={org.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                        <div key={org.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700">
                           <div>
                             <div className="font-bold text-sm text-slate-900 dark:text-slate-50">{org.name}</div>
                             <div className="text-[10px] text-slate-500 dark:text-slate-400">Текущий: {org.plan} • {org.status}</div>
@@ -1737,7 +1571,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           <div className="flex gap-2">
                             <button 
                               onClick={() => handleActivateTrial(org.id, 7, PlanType.PRO)}
-                              className="px-3 py-1.5 bg-white border border-slate-200 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-bold hover:bg-indigo-50 transition-all"
+                              className="px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 rounded-lg text-xs font-bold hover:bg-indigo-50 dark:hover:bg-slate-700 transition-all"
                             >
                               +7д PRO
                             </button>
@@ -1864,11 +1698,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, nightShift: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
                     <div className="flex items-center gap-3">
                       <BarChart3 className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       <div>
@@ -1886,11 +1720,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, advancedAnalytics: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
                     <div className="flex items-center gap-3">
                       <CreditCard className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       <div>
@@ -1908,11 +1742,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, payroll: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
                     <div className="flex items-center gap-3">
                       <Bell className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       <div>
@@ -1930,11 +1764,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, shiftMonitoring: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
                     <div className="flex items-center gap-3">
                       <Building2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       <div>
@@ -1952,11 +1786,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, multipleBranches: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
                     <div className="flex items-center gap-3">
                       <History className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       <div>
@@ -1974,11 +1808,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, auditLog: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100 transition-all">
+                  <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
                     <div className="flex items-center gap-3">
                       <CreditCard className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                       <div>
@@ -1996,18 +1830,18 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           features: { ...editingPlan.limits.features, payments: e.target.checked }
                         }
                       })}
-                      className="w-5 h-5 rounded border-slate-300 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
+                      className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 dark:text-indigo-400 focus:ring-indigo-500"
                     />
                   </label>
                 </div>
               </div>
             </div>
 
-            <div className="p-6 border-t border-slate-100 bg-slate-50 shrink-0 flex gap-3">
+            <div className="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 shrink-0 flex gap-3">
                 <button 
                   type="button"
                   onClick={() => setEditingPlan(null)}
-                  className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 transition-all"
+                  className="flex-1 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
                 >
                   Отмена
                 </button>
@@ -2037,7 +1871,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 </div>
                 <h3 className="text-lg font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight">Удаление организации</h3>
               </div>
-              <button onClick={() => { setConfirmDeleteOrg(null); setDeletePinInput(''); setDeleteError(null); }} className="text-slate-400 hover:text-slate-900 dark:text-slate-50 text-2xl">&times;</button>
+              <button onClick={() => { setConfirmDeleteOrg(null); setDeletePinInput(''); setDeleteError(null); }} className="text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 text-2xl">&times;</button>
             </div>
             
             <div className="space-y-6">
@@ -2073,7 +1907,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 <button 
                   onClick={handleDeleteOrg}
                   disabled={saving || deletePinInput.length < 4}
-                  className="flex-1 py-4 bg-rose-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-2xl dark:shadow-slate-900/20 shadow-rose-100 hover:bg-rose-700 transition-all active:scale-95 disabled:opacity-50"
+                  className="flex-1 py-4 bg-rose-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-2xl dark:shadow-slate-900/20 shadow-rose-100 dark:shadow-rose-900/20 hover:bg-rose-700 transition-all active:scale-95 disabled:opacity-50"
                 >
                   {saving ? 'Удаление...' : 'Удалить всё'}
                 </button>
@@ -2200,7 +2034,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     <button 
                       type="button"
                       onClick={() => setEditingOrg({...editingOrg, expiryDate: undefined})}
-                      className="px-4 py-2 bg-slate-100 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-200"
+                      className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-200 dark:hover:bg-slate-700"
                     >
                       Сбросить
                     </button>
@@ -2208,49 +2042,26 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                   <p className="text-[10px] text-slate-400 mt-1">Оставьте пустым для бессрочного тарифа</p>
                 </div>
 
-                <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
-                  <p className="text-xs text-indigo-700 leading-relaxed">
+                <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-100 dark:border-indigo-800/30">
+                  <p className="text-xs text-indigo-700 dark:text-indigo-300 leading-relaxed">
                     Изменение тарифа мгновенно обновит лимиты (пользователи, оборудование) и доступные функции для всех сотрудников этой организации.
                   </p>
                 </div>
 
                 {editingAdmin && (
-                  <div className="pt-4 border-t border-slate-100 space-y-4">
+                  <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
                     <h4 className="text-xs font-black text-slate-900 dark:text-slate-50 uppercase tracking-widest flex items-center gap-2">
                       <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                       Данные администратора
                     </h4>
                     <div className="grid grid-cols-2 gap-4">
-                      <div className="col-span-2">
-                        <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Email администратора</label>
-                        <input 
-                          type="email"
-                          value={editingAdmin.email || ''}
-                          onChange={(e) => setEditingAdmin({...editingAdmin, email: e.target.value})}
-                          placeholder="admin@example.com"
-                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Пароль (для входа через email)</label>
-                        <input 
-                          type="password"
-                          value={adminPassword}
-                          onChange={(e) => setAdminPassword(e.target.value)}
-                          placeholder="Минимум 6 символов"
-                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                        />
-                        <p className="text-[9px] text-slate-400 mt-1 ml-1">
-                          Заполните, чтобы создать аккаунт или если админ забыл пароль (только для новых).
-                        </p>
-                      </div>
                       <div>
                         <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Имя админа</label>
                         <input 
                           type="text"
                           value={editingAdmin.name}
                           onChange={(e) => setEditingAdmin({...editingAdmin, name: e.target.value})}
-                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                          className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-slate-900 dark:text-slate-100"
                         />
                       </div>
                       <div>
@@ -2260,7 +2071,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           maxLength={4}
                           value={editingAdmin.pin}
                           onChange={(e) => setEditingAdmin({...editingAdmin, pin: e.target.value.replace(/[^0-9]/g, '')})}
-                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-center tracking-widest"
+                          className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-center tracking-widest text-slate-900 dark:text-slate-100"
                         />
                       </div>
                     </div>
@@ -2268,11 +2079,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 )}
               </div>
 
-              <div className="p-6 border-t border-slate-100 bg-slate-50 shrink-0 flex gap-3">
+              <div className="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 shrink-0 flex gap-3">
                 <button 
                   type="button"
                   onClick={() => setEditingOrg(null)}
-                  className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 transition-all"
+                  className="flex-1 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
                 >
                   Отмена
                 </button>
@@ -2414,12 +2225,12 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 <h3 className="text-white font-bold">Сотрудники: {viewingUsersOrg.name}</h3>
                 <p className="text-[10px] text-emerald-100 dark:text-emerald-300 font-mono uppercase tracking-widest">{viewingUsersOrg.id}</p>
               </div>
-              <button onClick={() => setViewingUsersOrg(null)} className="text-emerald-100 hover:text-white transition-colors">
+              <button onClick={() => setViewingUsersOrg(null)} className="text-emerald-100 hover:text-white dark:hover:text-emerald-50 transition-colors">
                 <X className="w-6 h-6" />
               </button>
             </div>
             
-            <div className="p-6 max-h-[60vh] overflow-y-auto">
+                  <div className="p-6 max-h-[60vh] overflow-y-auto custom-scrollbar">
               {loadingUsers ? (
                 <div className="py-12 text-center">
                   <RefreshCw className="w-8 h-8 text-emerald-600 dark:text-emerald-400 animate-spin mx-auto mb-4" />
@@ -2432,7 +2243,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {orgUsers.map(user => (
-                    <div key={user.id} className="p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center gap-4">
+                    <div key={user.id} className="p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-2xl flex items-center gap-4">
                       <div className="w-10 h-10 bg-white dark:bg-slate-900 rounded-xl flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-bold shadow-md dark:shadow-slate-900/20 border border-slate-100 dark:border-slate-800">
                         {user.name.charAt(0)}
                       </div>
@@ -2489,7 +2300,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               <button 
                 onClick={confirmResetPin}
                 disabled={saving}
-                className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/40 shadow-indigo-100 hover:bg-indigo-700 transition-all disabled:opacity-50"
+                className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/40 shadow-indigo-100 dark:shadow-indigo-900/20 hover:bg-indigo-700 transition-all disabled:opacity-50"
               >
                 {saving ? '...' : 'Подтвердить'}
               </button>

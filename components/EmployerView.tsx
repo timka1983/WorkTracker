@@ -23,8 +23,6 @@ import { DocumentationView } from './DocumentationView';
 import { logAuditAction } from '../lib/audit';
 import { MessageSquare, X } from 'lucide-react';
 
-import { useConfirm } from '../contexts/ConfirmContext';
-
 interface EmployerViewProps {
   logs: WorkLog[];
   logsLookup?: Record<string, Record<string, WorkLog[]>>;
@@ -78,7 +76,6 @@ const EmployerView: React.FC<EmployerViewProps> = ({
   machines, onUpdateMachines, positions, onUpdatePositions, branches, onUpdateBranches, onDeleteBranch, onImportData, onLogsUpsert, activeShiftsMap = {}, onActiveShiftsUpdate, onDeleteLog,
   onRefresh, forceCleanAll, onCleanupDatabase, onRemoveBase64Photos, onRunDiagnostics, onMergeDuplicates, onFixDbStructure, isSyncing = false, nightShiftBonusMinutes, onUpdateNightBonus, currentOrg, plans, onUpdateOrg, currentUser: propCurrentUser, onMonthChange, payments, onSavePayment, onDeletePayment, getArchivedUsers, getArchivedMachines, onRestoreUser, onRestoreMachine, getNow, viewMode, setViewMode, unreadSupportMessages = 0, onResetUnread
 }) => {
-  const { confirm } = useConfirm();
   const [filterMonth, setFilterMonth] = useState(format(getNow(), 'yyyy-MM'));
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [editingLog, setEditingLog] = useState<{ userId: string; date: string } | null>(null);
@@ -214,7 +211,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
   }, [propCurrentUser, users]);
 
   const userPerms = useMemo(() => {
-    if (currentUser?.id === 'admin' || currentUser?.isAdmin) return { isFullAdmin: true, isLimitedAdmin: false };
+    if (currentUser?.id === 'admin') return { isFullAdmin: true, isLimitedAdmin: false };
     const pos = positions.find(p => p.name === currentUser?.position);
     return pos?.permissions || DEFAULT_PERMISSIONS;
   }, [currentUser, positions]);
@@ -464,7 +461,13 @@ const EmployerView: React.FC<EmployerViewProps> = ({
       }
     });
 
-    return { activeShifts, finishedToday, avgWeeklyHours, absenceCounts, activeLogsMap, todayStr, orphanedActiveShifts };
+    const sickOrVacationToday = employees.filter(emp => {
+      const userLogsMap = logsLookup[emp.id] || {};
+      const todayLogs = userLogsMap[todayStr] || [];
+      return todayLogs.some(l => l.entryType === EntryType.SICK || l.entryType === EntryType.VACATION);
+    });
+
+    return { activeShifts, finishedToday, avgWeeklyHours, absenceCounts, activeLogsMap, todayStr, orphanedActiveShifts, sickOrVacationToday };
   }, [logs, logsLookup, employees, filterMonth, activeShiftsMap, serverStats, getNow, filteredUsers]);
 
   // Функция для принудительного завершения смены администратором
@@ -472,13 +475,15 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     const empName = users.find(u => u.id === log.userId)?.name || 'сотрудника';
     const mName = machines.find(m => m.id === log.machineId)?.name || 'Работа';
     
-    const confirmed = await confirm({
-      title: 'Принудительное завершение',
-      message: `Вы действительно хотите принудительно завершить смену (${mName}) для ${empName}? Таймер сотрудника будет остановлен, оборудование станет свободным.`,
-      type: 'warning'
-    });
-
-    if (!confirmed) return;
+    // Using a simple window.confirm is the standard way, if it doesn't work, it's an issue with the environment.
+    // The user says "in desktop version there are no dialog boxes". This is strange as window.confirm should work.
+    // Maybe the user means they are not visible or blocked.
+    // Let's try to use a custom modal for force finishing.
+    
+    // For now, I will keep the confirm but I will add a log to see if it's called.
+    console.log('Force finishing shift for', empName);
+    
+    if (!window.confirm(`Вы действительно хотите принудительно завершить смену (${mName}) для ${empName}? Таймер сотрудника будет остановлен, оборудование станет свободным.`)) return;
 
     const now = getNow();
     // Рассчитываем длительность смены до текущего момента
@@ -605,13 +610,8 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     setNewUser({ name: '', position: positions[0]?.name || '', department: '', pin: '0000', birthday: '', requirePhoto: false, branchId: '' });
   };
 
-  const deleteLogItem = async (logId: string) => {
-    const confirmed = await confirm({
-      title: 'Удаление записи',
-      message: 'Удалить эту запись безвозвратно?',
-      type: 'danger'
-    });
-    if (confirmed) {
+  const deleteLogItem = (logId: string) => {
+    if (confirm('Удалить эту запись безвозвратно?')) {
       const log = logs.find(l => l.id === logId);
       onDeleteLog(logId);
       if (currentOrg && currentUser && log) {
@@ -807,12 +807,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
 
   const handleRecalculateAll = async () => {
     if (!currentOrg) return;
-    const confirmed = await confirm({
-      title: 'Пересчет данных',
-      message: `Пересчитать ВСЕ логи и График (план) за ${filterMonth}? Это обновит длительность смен согласно бонусу ночных смен (${currentOrg.nightShiftBonus || 0}%) и проставит 'Р' в графике там, где были выходы.`,
-      type: 'warning'
-    });
-    if (!confirmed) return;
+    if (!confirm(`Пересчитать ВСЕ логи и График (план) за ${filterMonth}? Это обновит длительность смен согласно бонусу ночных смен (${currentOrg.nightShiftBonus || 0}%) и проставит 'Р' в графике там, где были выходы.`)) return;
     
     setIsRecalculating(true);
     try {
@@ -949,14 +944,9 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = async (ev) => {
+    reader.onload = (ev) => {
       const content = ev.target?.result as string;
-    const confirmed = await confirm({
-      title: 'Импорт данных',
-      message: 'Внимание! Это действие заменит текущую базу данных. Продолжить?',
-      type: 'danger'
-    });
-    if (confirmed) {
+      if (confirm('Внимание! Это действие заменит текущую базу данных. Продолжить?')) {
         onImportData(content);
         if (currentOrg && currentUser) {
           logAuditAction(
@@ -1070,13 +1060,8 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     return filteredTabs;
   }, [userPerms, canUsePayroll]);
 
-  const handleResetDevicePairing = async () => {
-    const confirmed = await confirm({
-      title: 'Сброс привязки',
-      message: 'Сбросить привязку профиля на этом устройстве? На этом планшете/телефоне система снова потребует выбрать пользователя при входе.',
-      type: 'warning'
-    });
-    if (confirmed) {
+  const handleResetDevicePairing = () => {
+    if (confirm('Сбросить привязку профиля на этом устройстве? На этом планшете/телефоне система снова потребует выбрать пользователя при входе.')) {
       localStorage.removeItem(STORAGE_KEYS.LAST_USER_ID);
       alert('Привязка сброшена.');
     }
@@ -1254,12 +1239,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
         <div className="flex items-center gap-2 w-full sm:w-auto">
            <button 
             onClick={async () => {
-    const confirmed = await confirm({
-      title: 'Восстановление привязки',
-      message: 'Это попытается восстановить привязку сотрудников и логов к вашей организации. Продолжить?',
-      type: 'info'
-    });
-    if (confirmed) {
+              if (confirm('Это попытается восстановить привязку сотрудников и логов к вашей организации. Продолжить?')) {
                 const results = await db.getDiagnostics();
                 
                 // Only block if critical tables are missing
@@ -1571,7 +1551,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
               Исправить дубликаты в БД
             </button>
             <button 
-              onClick={async () => {
+              onClick={() => {
                 let storageCount = 0;
                 let base64Count = 0;
                 let totalPhotos = 0;
@@ -1590,12 +1570,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
                 });
                 
                 if (base64Count > 0) {
-    const confirmed = await confirm({
-      title: 'Очистка Base64',
-      message: `Найдено ${base64Count} фото в Base64. Они нагружают базу. Удалить их? (Фото в хранилище останутся)`,
-      type: 'warning'
-    });
-    if (confirmed) {
+                  if (confirm(`Найдено ${base64Count} фото в Base64. Они нагружают базу. Удалить их? (Фото в хранилище останутся)`)) {
                     onRemoveBase64Photos?.();
                   }
                 } else {

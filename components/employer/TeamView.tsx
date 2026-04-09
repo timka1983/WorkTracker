@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, PositionConfig, PlanLimits, Organization, Machine, WorkLog, Branch } from '../../types';
 import { Archive, Send, QrCode } from 'lucide-react';
 import { ArchiveConfirmModal, ArchiveViewModal } from './ArchiveModals';
 import { QRCodeSVG } from 'qrcode.react';
 import { sendTelegramNotification } from '../../utils';
+import { db } from '../../lib/supabase';
 
 interface TeamViewProps {
   users: User[];
@@ -54,12 +55,26 @@ export const TeamView: React.FC<TeamViewProps> = ({
   const [isTelegramQrModalOpen, setIsTelegramQrModalOpen] = useState(false);
   const [selectedUserForQr, setSelectedUserForQr] = useState<User | null>(null);
 
+  useEffect(() => {
+    if (currentOrg && !currentOrg.inviteToken) {
+      const generateToken = async () => {
+        const inviteToken = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+        
+        const updatedOrg = { ...currentOrg, inviteToken };
+        await db.createOrganization(updatedOrg); // createOrganization does an upsert
+      };
+      generateToken();
+    }
+  }, [currentOrg]);
+
   const handleConfirmArchive = (reason: string) => {
     onDeleteUser(archiveConfirm.userId, reason);
     setArchiveConfirm({ isOpen: false, userId: '', userName: '' });
   };
 
-  const appUrl = currentOrg ? `${window.location.origin}?orgId=${currentOrg.id}` : window.location.origin;
+  const appUrl = currentOrg?.inviteToken ? `${window.location.origin}?invite=${currentOrg.inviteToken}` : (currentOrg ? `${window.location.origin}?orgId=${currentOrg.id}` : window.location.origin);
   // NOTE: Replace 'YourBotName' with your actual Telegram bot username
   const botUsername = 'YourBotName';
   const telegramBotUrl = `https://t.me/${botUsername}?start=${selectedUserForQr?.id || ''}`;

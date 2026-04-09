@@ -3,7 +3,6 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { User, UserRole, Organization } from '../types';
 import { STORAGE_KEYS } from '../constants';
 import { LayoutDashboard, CalendarDays, CircleDollarSign, Users, CreditCard, Settings, LogOut, RefreshCw, Trash2, Menu, X, ArrowLeftRight, PanelLeftClose, PanelLeftOpen, MessageSquare, HelpCircle, Sun, Moon } from 'lucide-react';
-import { useConfirm } from '../contexts/ConfirmContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -27,7 +26,6 @@ const Layout: React.FC<LayoutProps> = ({
   employerViewMode, setEmployerViewMode, employeeViewMode, setEmployeeViewMode, canUsePayroll = false,
   unreadSupportMessages = 0
 }) => {
-  const { confirm } = useConfirm();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     return localStorage.getItem('theme') === 'dark' || 
@@ -327,13 +325,8 @@ const Layout: React.FC<LayoutProps> = ({
                       )}
                     </button>
                     <button 
-                      onClick={async () => {
-                        const confirmed = await confirm({
-                          title: 'Очистка кэша',
-                          message: 'Это полностью очистит локальный кэш и перезагрузит приложение. Используйте это, если данные отображаются некорректно. Продолжить?',
-                          type: 'warning'
-                        });
-                        if (confirmed) {
+                      onClick={() => {
+                        if (confirm('Это полностью очистит локальный кэш и перезагрузит приложение. Используйте это, если данные отображаются некорректно. Продолжить?')) {
                           const orgId = localStorage.getItem(STORAGE_KEYS.ORG_ID);
                           localStorage.clear();
                           const nextUrl = orgId ? `/?org_switch=${orgId}&reset=${Date.now()}` : `/?reset=${Date.now()}`;

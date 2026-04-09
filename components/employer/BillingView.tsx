@@ -36,7 +36,7 @@ export const BillingView: React.FC<BillingViewProps> = ({
     if (currentOrg) {
       db.getSubscriptionHistory(currentOrg.id).then(history => {
         if (history) setPaymentHistory(history);
-      });
+      }).catch(err => console.error('Error fetching subscription history:', err));
     }
   }, [currentOrg]);
 
@@ -61,9 +61,13 @@ export const BillingView: React.FC<BillingViewProps> = ({
       // In a real app, you would redirect to the payment provider
       // For this demo, we'll open the URL in a new tab or redirect
       window.location.href = url;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Payment error:', error);
-      alert('Ошибка при создании платежа. Попробуйте позже.');
+      if (error.message === 'Failed to fetch') {
+        alert('Ошибка сети: Не удалось подключиться к серверу платежей. Проверьте подключение к интернету.');
+      } else {
+        alert('Ошибка при создании платежа: ' + error.message);
+      }
     } finally {
       setIsProcessingPayment(null);
     }
@@ -83,9 +87,29 @@ export const BillingView: React.FC<BillingViewProps> = ({
             <span className="text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-3 py-1 rounded-full uppercase tracking-widest border border-blue-100 dark:border-blue-800">Активен</span>
             {currentOrg?.expiryDate && (
               <span className="text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest ml-4">
-                До: {format(new Date(currentOrg.expiryDate), 'dd.MM.yyyy')}
+                Осталось дней: {Math.max(0, Math.ceil((new Date(currentOrg.expiryDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)))}
               </span>
             )}
+          </div>
+
+          <div className="mt-8 flex gap-4">
+            <button 
+              onClick={() => handleSelectPlan(currentOrg?.plan || PlanType.FREE)}
+              className="px-6 py-3 bg-blue-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl hover:bg-blue-700 transition-all"
+            >
+              Продлить тариф
+            </button>
+            <button 
+              onClick={async () => {
+                if (!currentOrg) return;
+                await db.updateOrganization(currentOrg.id, { invoiceRequested: true });
+                alert('Запрос на оплату по счёту отправлен администратору.');
+              }}
+              disabled={currentOrg?.invoiceRequested}
+              className="px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition-all disabled:opacity-50"
+            >
+              {currentOrg?.invoiceRequested ? 'Счёт запрошен' : 'Оплатить по счёту'}
+            </button>
           </div>
 
           <div className="mt-8 pt-8 border-t border-slate-100 dark:border-slate-800 max-w-md">

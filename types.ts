@@ -95,6 +95,7 @@ export interface Organization {
   plan: PlanType;
   status: 'active' | 'trial' | 'expired';
   expiryDate?: string;
+  inviteToken?: string;
   notificationSettings?: {
     onShiftStart: boolean;
     onShiftEnd: boolean;
@@ -107,6 +108,7 @@ export interface Organization {
   roundShiftMinutes?: boolean; // 15-minute rounding rule
   nightShiftBonus?: number; // Global night shift bonus in minutes
   debugEnabled?: boolean; // Enable debug info for this organization
+  invoiceRequested?: boolean; // Track invoice request status
   createdAt?: string; // ISO timestamp
 }
 

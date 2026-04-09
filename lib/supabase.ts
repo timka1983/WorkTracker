@@ -6,22 +6,101 @@ import { STORAGE_KEYS } from '../constants';
 
 const getEnv = (name: string): string => {
   try {
-    if (typeof process !== 'undefined' && process.env && process.env[name]) {
-      return process.env[name] as string;
-    }
+    // 1. Try import.meta.env (Vite standard)
     const metaEnv = (import.meta as any).env;
+    let val = '';
     if (metaEnv && metaEnv[name]) {
-      return metaEnv[name];
+      val = metaEnv[name];
+    } else if (typeof process !== 'undefined' && process.env && process.env[name]) {
+      // 2. Try process.env (Node/Webpack fallback)
+      val = process.env[name] as string;
+    }
+    
+    if (val) {
+      // AGGRESSIVE CLEANING: Remove all non-printable characters, hidden spaces, etc.
+      return val.trim().replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]/g, '');
     }
   } catch (e) {}
   return '';
 };
 
-const SUPABASE_URL = getEnv('VITE_SUPABASE_URL') || 'https://placeholder-project.supabase.co';
-const SUPABASE_ANON_KEY = getEnv('VITE_SUPABASE_ANON_KEY') || 'placeholder-anon-key';
+const SUPABASE_URL = getEnv('VITE_SUPABASE_URL').trim() || 'https://placeholder-project.supabase.co';
+const SUPABASE_ANON_KEY = getEnv('VITE_SUPABASE_ANON_KEY').trim() || getEnv('VITE_SUPABASE_PUBLISHABLE_KEY').trim() || 'placeholder-anon-key';
 const APP_SECRET = 'work-tracker-pro-secret-2026';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Debug logging for configuration
+if (typeof window !== 'undefined') {
+  console.log('🛠️ Supabase Config Debug:');
+  console.log('  URL configured:', SUPABASE_URL !== 'https://placeholder-project.supabase.co' && SUPABASE_URL !== '');
+  console.log('  Key configured:', SUPABASE_ANON_KEY !== 'placeholder-anon-key' && SUPABASE_ANON_KEY !== '');
+  console.log('  Current Origin:', window.location.origin);
+  
+  // Test connection to Supabase URL with retries
+  if (SUPABASE_URL !== 'https://placeholder-project.supabase.co') {
+    try {
+      const url = new URL(SUPABASE_URL);
+      console.log('🌐 Supabase Host:', url.hostname);
+      
+      const testConnection = async (retries = 3) => {
+        for (let i = 0; i < retries; i++) {
+          try {
+            // Basic connectivity test using no-cors to bypass CORS issues for the ping
+            // We use a timestamp to avoid cache
+            const pingUrl = `${SUPABASE_URL}/rest/v1/?apikey=${SUPABASE_ANON_KEY}`;
+            await fetch(pingUrl, { method: 'GET', mode: 'no-cors', cache: 'no-store' });
+            console.log(`✅ Supabase Server is REACHABLE (Attempt ${i + 1})`);
+            return true;
+          } catch (err: any) {
+            console.warn(`⚠️ Connection attempt ${i + 1} failed:`, err.message);
+            if (i === retries - 1) {
+              console.error('❌ Supabase Server is UNREACHABLE after multiple attempts');
+              if (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.') {
+                console.warn('🌐 CRITICAL NETWORK ERROR: The browser cannot connect to Supabase.');
+                console.warn('🛠️ POSSIBLE SOLUTIONS:\n' +
+                             '1. Check if your Supabase project is "Paused" in the Supabase Dashboard.\n' +
+                             '2. Disable AdBlock/uBlock - they often block "supabase.co" domains.\n' +
+                             '3. Check your internet connection or VPN.\n' +
+                             '4. If you are on a corporate network, "supabase.co" might be blocked by a firewall.\n' +
+                             '5. CORS: Ensure ' + window.location.origin + ' is allowed in Supabase (Settings -> API -> CORS Allowed Origins).');
+              }
+            }
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 1500 * (i + 1)));
+          }
+        }
+        return false;
+      };
+      
+      testConnection();
+    } catch (e) {
+      console.error('❌ Invalid Supabase URL format:', SUPABASE_URL);
+    }
+  }
+
+  if (SUPABASE_URL !== 'https://placeholder-project.supabase.co') {
+    console.log('  URL starts with:', SUPABASE_URL.substring(0, 15) + '...');
+  }
+  if (SUPABASE_ANON_KEY !== 'placeholder-anon-key') {
+    console.log('  Key starts with:', SUPABASE_ANON_KEY.substring(0, 10) + '...');
+    console.log('  Key length:', SUPABASE_ANON_KEY.length);
+  }
+}
+
+// Ensure URL doesn't have trailing slash for consistency
+const finalUrl = SUPABASE_URL.endsWith('/') ? SUPABASE_URL.slice(0, -1) : SUPABASE_URL;
+
+export const supabase = createClient(finalUrl, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  },
+  global: {
+    fetch: (...args) => {
+      return fetch(...args);
+    }
+  }
+});
 
 // Check if there's a potentially invalid session in localStorage and clear it if it's causing issues
 // This helps prevent "Invalid Refresh Token: Refresh Token Not Found" errors
@@ -29,6 +108,13 @@ if (typeof window !== 'undefined') {
   const checkSession = async () => {
     try {
       const { data, error } = await supabase.auth.getSession();
+      if (data?.session) {
+        console.log('🔑 Supabase: Active session found for user:', data.session.user.id);
+        console.log('🔑 Supabase: Auth role:', data.session.user.role);
+      } else {
+        console.log('🔑 Supabase: No active session (Guest)');
+      }
+      
       if (error && (error.message.includes('Refresh Token Not Found') || error.message.includes('invalid_grant'))) {
         console.warn('🔑 Supabase: Invalid session detected, clearing...', error.message);
         await supabase.auth.signOut();
@@ -78,26 +164,60 @@ const cleanValue = (val: any) => {
 export const db = {
   isConfigured: checkConfig,
   checkConnection: async () => {
-    if (!checkConfig()) return false;
+    if (!checkConfig()) return { isConnected: false, error: 'Supabase не настроен. Пожалуйста, добавьте VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в настройки.' };
     try {
-      const { data, error } = await supabase.from('organizations').select('id').limit(1);
-      return !error;
-    } catch (e) {
-      return false;
+      const { error } = await supabase.from('organizations').select('id').limit(1);
+      if (error) {
+        return { 
+          isConnected: false, 
+          error: `Ошибка Supabase: ${error.message} (Код: ${error.code})` 
+        };
+      }
+      return { isConnected: true, error: null };
+    } catch (e: any) {
+      return { 
+        isConnected: false, 
+        error: `Ошибка сети: ${e.message || 'Не удалось подключиться к Supabase'}` 
+      };
     }
   },
   fixDatabase: async () => {
     if (!checkConfig()) return { success: false, error: 'Supabase not configured' };
     try {
-      // Try to add missing columns using RPC if available
-      // We'll try common ones that might be missing
+      // 1. Ensure super-admin user exists in the database
+      try {
+        const { data: existingSuperAdmin } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', 'super-admin')
+          .single();
+        
+        if (!existingSuperAdmin) {
+          console.log('🛠️ Creating super-admin user record...');
+          await supabase.from('users').insert({
+            id: 'super-admin',
+            name: 'Главный Администратор',
+            role: 'SUPER_ADMIN',
+            position: 'Super Admin',
+            pin: '7777',
+            is_admin: true,
+            organization_id: 'system'
+          });
+        }
+      } catch (e) {
+        console.warn('🛠️ Error ensuring super-admin user:', e);
+      }
+
+      // 2. Try to add missing columns using RPC if available
       const columns = [
         { table: 'users', column: 'email', type: 'TEXT' },
         { table: 'users', column: 'telegram_settings', type: 'JSONB' },
+        { table: 'users', column: 'supabase_auth_id', type: 'UUID' },
         { table: 'organizations', column: 'telegram_settings', type: 'JSONB' },
         { table: 'organizations', column: 'night_shift_bonus', type: 'INTEGER DEFAULT 20' },
         { table: 'organizations', column: 'is_active', type: 'BOOLEAN DEFAULT TRUE' },
-        { table: 'organizations', column: 'plan', type: 'TEXT DEFAULT \'FREE\'' }
+        { table: 'organizations', column: 'plan', type: 'TEXT DEFAULT \'FREE\'' },
+        { table: 'organizations', column: 'invite_token', type: 'TEXT' }
       ];
 
       let anyError = false;
@@ -121,13 +241,36 @@ export const db = {
       if (anyError) {
         return { 
           success: false, 
-          error: 'Some columns could not be added automatically. Please use SQL Editor.',
-          sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+          error: 'Некоторые колонки или настройки RLS требуют ручного обновления в SQL Editor.',
+          sql: `-- 1. Базовая схема
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_settings JSONB;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS supabase_auth_id UUID;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS telegram_settings JSONB;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS night_shift_bonus INTEGER DEFAULT 20;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS invite_token TEXT;
+
+-- 2. Создание супер-админа
+INSERT INTO users (id, name, role, position, pin, is_admin, organization_id)
+VALUES ('super-admin', 'Главный Администратор', 'SUPER_ADMIN', 'Super Admin', '7777', true, 'system')
+ON CONFLICT (id) DO NOTHING;
+
+-- 3. Обновление RLS для Супер-админа
+CREATE OR REPLACE FUNCTION is_super_admin()
+RETURNS BOOLEAN AS $$
+  SELECT role = 'SUPER_ADMIN' FROM users WHERE supabase_auth_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+DROP POLICY IF EXISTS "Super Admin all access" ON organizations;
+CREATE POLICY "Super Admin all access" ON organizations FOR ALL USING (is_super_admin());
+
+DROP POLICY IF EXISTS "Super Admin users access" ON users;
+CREATE POLICY "Super Admin users access" ON users FOR ALL USING (is_super_admin());
+
+DROP POLICY IF EXISTS "Super Admin logs access" ON work_logs;
+CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_admin());`
         };
       }
 
@@ -218,6 +361,7 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
       ...data,
       ownerId: data.owner_id,
       expiryDate: data.expiry_date,
+      inviteToken: data.invite_token || data.notification_settings?.inviteToken,
       notificationSettings: data.notification_settings,
       locationSettings: data.location_settings || data.notification_settings?.locationSettings,
       telegramSettings: data.telegram_settings || data.notification_settings?.telegramSettings,
@@ -227,6 +371,12 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
       nightShiftBonus: data.night_shift_bonus || data.notification_settings?.nightShiftBonus || 0,
       createdAt: data.created_at
     };
+  },
+  getOrganizationByInviteToken: async (token: string) => {
+    if (!checkConfig()) return null;
+    const { data, error } = await supabase.rpc('get_org_by_invite_token', { token });
+    if (error || !data || data.length === 0) return null;
+    return data[0];
   },
   getLogs: async (orgId: string, monthPrefix?: string) => {
     if (!checkConfig()) return null;
@@ -525,7 +675,7 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
       }
       
       // Если ошибка в данных (например, слишком большие фото), пробуем без фото
-      if (error.code === '22001' || error.message?.includes('too long')) {
+      if (error.code === '22001' || error?.message?.includes('too long')) {
         const noPhotoPayload = payload.map(p => {
           const { photo_in, photo_out, ...rest } = p;
           return rest;
@@ -946,7 +1096,7 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
       
       const { error } = await supabase.from('machines').upsert(payload);
       
-      if (error && (error.code === '42703' || error.code === 'PGRST204' || error.message?.includes('column'))) {
+      if (error && (error.code === '42703' || error.code === 'PGRST204' || error?.message?.includes('column'))) {
          // Fallback without branch_id and is_archived
          const minimalPayload = payload.map((p: any) => {
            const { branch_id, is_archived, ...rest } = p;
@@ -1492,6 +1642,7 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
       plan: org.plan,
       status: org.status,
       expiry_date: org.expiryDate,
+      invite_token: org.inviteToken,
       notification_settings: org.notificationSettings,
       location_settings: org.locationSettings,
       telegram_settings: org.telegramSettings,
@@ -1513,6 +1664,7 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';`
         if (org.maxShiftDuration !== undefined) mergedSettings.maxShiftDuration = org.maxShiftDuration;
         if (org.roundShiftMinutes !== undefined) mergedSettings.roundShiftMinutes = org.roundShiftMinutes;
         if (org.nightShiftBonus !== undefined) mergedSettings.nightShiftBonus = org.nightShiftBonus;
+        if (org.inviteToken) mergedSettings.inviteToken = org.inviteToken;
         
         await supabase.from('organizations').upsert({
           id: org.id,

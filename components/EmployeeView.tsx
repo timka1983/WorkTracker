@@ -18,8 +18,6 @@ import { AbsenceControls } from './employee/AbsenceControls';
 import { CameraModal } from './employee/CameraModal';
 import { ShiftMonitor } from './ShiftMonitor';
 
-import { useConfirm } from '../contexts/ConfirmContext';
-
 interface EmployeeViewProps {
   user: User;
   logs: WorkLog[];
@@ -64,13 +62,23 @@ const BIRTHDAY_GREETINGS = [
 const EmployeeView: React.FC<EmployeeViewProps> = ({ 
   user, logs, logsLookup = {}, onLogsUpsert, activeShifts, activeShiftsMap = {}, onActiveShiftsUpdate, onOvertime, machines, positions, onUpdateUser, nightShiftBonusMinutes, onRefresh, planLimits, currentOrg, onMonthChange, getNow, viewMode, setViewMode, payments = []
 }) => {
-  const { confirm } = useConfirm();
-  const orgId = localStorage.getItem(STORAGE_KEYS.ORG_ID) || 'initial_org';
+  const orgId = localStorage.getItem(STORAGE_KEYS.ORG_ID) || 'default_org';
 
   const perms = useMemo(() => {
     const config = positions.find(p => p.name === user.position);
     return config?.permissions || DEFAULT_PERMISSIONS;
   }, [user.position, positions]);
+
+  const filteredMachines = useMemo(() => {
+    const isOverridden = user.payroll?.overrides?.machineRates || false;
+    const effectiveMachineRates = isOverridden 
+      ? (user.payroll?.machineRates || {}) 
+      : (positions.find(p => p.name === user.position)?.payroll?.machineRates || {});
+    
+    const assignedMachineIds = Object.keys(effectiveMachineRates);
+    if (assignedMachineIds.length === 0) return machines;
+    return machines.filter(m => assignedMachineIds.includes(m.id));
+  }, [machines, user.payroll, user.position, positions]);
 
   const [overtimeAlerts, setOvertimeAlerts] = useState<Record<number, boolean>>({});
   const [overdueStages, setOverdueStages] = useState<Record<number, { stage: number, lastCheck: number }>>({});
@@ -184,7 +192,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
             
             const firstAvailable = machines.find(m => 
               !usedInOtherSlots.includes(m.id) && 
-              !busyMachineIds.includes(m.id)
+              !busyMachineIdsByOthers.includes(m.id)
             );
             if (firstAvailable) {
               next[slot] = firstAvailable.id;
@@ -257,10 +265,10 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     return Object.values(activeShifts).some(s => s !== null && (s as WorkLog).isNightShift);
   }, [activeShifts]);
 
-  const busyMachineIds = useMemo(() => {
+  const busyMachineIdsByOthers = useMemo(() => {
     const ids: string[] = [];
-    Object.values(activeShiftsMap || {}).forEach((userShifts) => {
-      if (userShifts) {
+    Object.entries(activeShiftsMap || {}).forEach(([userId, userShifts]) => {
+      if (userId !== user.id && userShifts) {
         Object.values(userShifts).forEach((shift: any) => {
           if (shift && shift.machineId) {
             ids.push(shift.machineId);
@@ -269,7 +277,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
       }
     });
     return ids;
-  }, [activeShiftsMap]);
+  }, [activeShiftsMap, user.id]);
 
   const todayStr = format(getNow(), 'yyyy-MM-dd');
   const isBirthday = useMemo(() => {
@@ -416,7 +424,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
             setIsProcessingAction(false);
             return;
           }
-          if (busyMachineIds.includes(selectedMachineId)) {
+          if (busyMachineIdsByOthers.includes(selectedMachineId)) {
             alert("Это оборудование уже занято другим сотрудником!");
             setIsProcessingAction(false);
             return;
@@ -477,7 +485,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     if (activeShifts[slot]) return;
 
     const selectedMachineId = perms.useMachines ? slotMachineIds[slot] : undefined;
-    if (selectedMachineId && busyMachineIds.includes(selectedMachineId)) {
+    if (selectedMachineId && busyMachineIdsByOthers.includes(selectedMachineId)) {
        alert("Ошибка: Оборудование уже было занято кем-то другим!");
        return;
     }
@@ -586,7 +594,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     }
   };
 
-  const handleMarkAbsence = async (type: EntryType) => {
+  const handleMarkAbsence = (type: EntryType) => {
     const typeNames = {
       [EntryType.DAY_OFF]: 'Выходной',
       [EntryType.SICK]: 'Больничный',
@@ -594,13 +602,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
       [EntryType.WORK]: 'Рабочая смена'
     };
 
-    const confirmed = await confirm({
-      title: 'Отметка отсутствия',
-      message: `Вы действительно хотите отметить сегодняшний день как "${typeNames[type]}"? Это действие нельзя будет отменить самостоятельно.`,
-      type: 'warning'
-    });
-
-    if (!confirmed) {
+    if (!confirm(`Вы действительно хотите отметить сегодняшний день как "${typeNames[type]}"? Это действие нельзя будет отменить самостоятельно.`)) {
       return;
     }
 
@@ -1057,8 +1059,8 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
             setIsNightModeGlobal={setIsNightModeGlobal}
             slotMachineIds={slotMachineIds}
             setSlotMachineIds={setSlotMachineIds}
-            machines={machines}
-            busyMachineIds={busyMachineIds}
+            machines={filteredMachines}
+            busyMachineIdsByOthers={busyMachineIdsByOthers}
             processAction={processAction}
             isProcessingAction={isProcessingAction}
             getMachineName={getMachineName}

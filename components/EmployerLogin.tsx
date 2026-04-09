@@ -31,7 +31,11 @@ const EmployerLogin: React.FC<EmployerLoginProps> = ({ onBack, onSuccess }) => {
           setLoading(false);
           return;
         }
-        setError(error.message);
+        if (error.message === 'Failed to fetch') {
+          setError('Ошибка сети: Не удалось подключиться к серверу. Проверьте настройки Supabase.');
+        } else {
+          setError(error.message);
+        }
         setLoading(false);
       } else if (data.user) {
         // Try to fetch by Supabase Auth UID first

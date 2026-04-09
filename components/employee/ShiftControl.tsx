@@ -13,7 +13,7 @@ interface ShiftControlProps {
   slotMachineIds: Record<number, string>;
   setSlotMachineIds: (val: Record<number, string>) => void;
   machines: Machine[];
-  busyMachineIds: string[];
+  busyMachineIdsByOthers: string[];
   processAction: (slot: number, type: 'start' | 'stop') => void;
   isProcessingAction?: boolean;
   getMachineName: (id?: string) => string;
@@ -32,7 +32,7 @@ export const ShiftControl = memo<ShiftControlProps>(({
   slotMachineIds,
   setSlotMachineIds,
   machines,
-  busyMachineIds,
+  busyMachineIdsByOthers,
   processAction,
   isProcessingAction,
   getMachineName,
@@ -99,7 +99,7 @@ export const ShiftControl = memo<ShiftControlProps>(({
                 >
                   <option value="">-- Выберите оборудование --</option>
                   {machines.map(m => {
-                    const isBusyByOthers = busyMachineIds.includes(m.id);
+                    const isBusyByOthers = busyMachineIdsByOthers.includes(m.id);
                     const isSelectedInOtherSlot = Object.entries(slotMachineIds)
                       .some(([s, id]) => parseInt(s) !== slot && id === m.id);
                     
@@ -133,7 +133,7 @@ export const ShiftControl = memo<ShiftControlProps>(({
             )}
 
             <button 
-              disabled={isAbsentToday || isAnyShiftActiveInLogs || (perms.useMachines && busyMachineIds.includes(slotMachineIds[slot])) || isPaid || isProcessingAction}
+              disabled={isAbsentToday || isAnyShiftActiveInLogs || (perms.useMachines && busyMachineIdsByOthers.includes(slotMachineIds[slot])) || isPaid || isProcessingAction}
               onClick={() => {
                 if (isPaid) {
                   alert('Финансовый период закрыт. Изменение данных заблокировано.');

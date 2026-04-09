@@ -322,8 +322,12 @@ export const EmployeeEditModal: React.FC<EmployeeEditModalProps> = ({
                               } else {
                                 alert('Нет новых сообщений. Пусть сотрудник напишет боту любое сообщение.');
                               }
-                            } catch (e) {
-                              alert('Ошибка при запросе к Telegram API');
+                            } catch (e: any) {
+                              if (e.message === 'Failed to fetch') {
+                                alert('Ошибка сети: Не удалось подключиться к Telegram API. Проверьте подключение к интернету.');
+                              } else {
+                                alert('Ошибка при запросе к Telegram API: ' + e.message);
+                              }
                             }
                           }}
                           className="px-3 py-2 bg-amber-200 dark:bg-amber-900/50 text-amber-700 dark:text-amber-400 rounded-xl text-[10px] font-black uppercase hover:bg-amber-300 dark:hover:bg-amber-900/80 transition-colors whitespace-nowrap"
@@ -351,7 +355,7 @@ export const EmployeeEditModal: React.FC<EmployeeEditModalProps> = ({
                               if (data.ok) alert('Тестовое сообщение отправлено!');
                               else alert('Ошибка: ' + data.description);
                             } catch (e) {
-                              alert('Ошибка при отправке');
+                              alert('Ошибка при отправке: ' + (e as any).message);
                             }
                           }}
                           className="text-[9px] font-bold text-amber-700 underline hover:text-amber-900"

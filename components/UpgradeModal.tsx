@@ -9,8 +9,8 @@ interface UpgradeModalProps {
 const UpgradeModal: React.FC<UpgradeModalProps> = ({ reason, onClose, onUpgrade }) => {
   return (
     <div className="fixed inset-0 z-[200] bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
-      <div className="bg-white rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 p-10 w-full max-w-sm border border-slate-200 text-center space-y-6">
-        <div className="w-20 h-20 bg-blue-100 text-blue-600 dark:text-blue-400 rounded-3xl flex items-center justify-center mx-auto shadow-2xl dark:shadow-slate-900/20 shadow-blue-50">
+      <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 p-10 w-full max-w-sm border border-slate-200 dark:border-slate-800 text-center space-y-6">
+        <div className="w-20 h-20 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-3xl flex items-center justify-center mx-auto shadow-2xl dark:shadow-slate-900/20 shadow-blue-50 dark:shadow-none">
           <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
         </div>
         <div>

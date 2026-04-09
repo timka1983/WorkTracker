@@ -68,7 +68,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
         </div>
 
         {showEmployerLogin ? (
-          <EmployerLogin onBack={() => setShowEmployerLogin(false)} onSuccess={() => window.location.reload()} />
+          <EmployerLogin onBack={() => setShowEmployerLogin(false)} onSuccess={() => window.location.href = window.location.pathname} />
         ) : !selectedLoginUser ? (
           <div className="space-y-6">
             <div>
@@ -101,6 +101,20 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
               className="w-full text-slate-500 text-[10px] font-black uppercase tracking-widest hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
             >
               Вход для работодателя
+            </button>
+            <button 
+              onClick={() => {
+                setSelectedLoginUser({
+                  id: 'super-admin-placeholder',
+                  name: 'Супер-администратор',
+                  role: UserRole.SUPER_ADMIN,
+                  position: 'System',
+                  pin: ''
+                });
+              }}
+              className="w-full text-slate-300 text-[9px] font-black uppercase tracking-widest hover:text-slate-500 transition-colors mt-2"
+            >
+              Вход для супер-админа
             </button>
           </div>
         ) : (

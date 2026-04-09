@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Organization, PlanType, User, UserRole } from '../types';
-import { db, supabase } from '../lib/supabase';
+import { db } from '../lib/supabase';
 import { Building2, Mail, User as UserIcon, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
 
 interface RegistrationFormProps {
@@ -17,7 +17,6 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
   const [formData, setFormData] = useState({
     orgName: '',
     email: '',
-    password: '',
     adminName: '',
     adminPin: '0000'
   });
@@ -60,45 +59,21 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
 
       setGeneratedOrgId(orgId);
 
-      // 2. Create Supabase Auth User
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: formData.email,
-        password: formData.password,
-        options: {
-          data: {
-            name: formData.adminName,
-            organizationId: orgId,
-            role: UserRole.EMPLOYER,
-            isAdmin: true
-          }
-        }
-      });
-
-      if (authError) {
-        if (authError.message.includes('Refresh Token Not Found')) {
-          await supabase.auth.signOut();
-          // Let the user try again or retry automatically
-          throw new Error('Проблема с сессией. Пожалуйста, попробуйте еще раз.');
-        }
-        throw authError;
-      }
-      if (!authData.user) throw new Error('Не удалось создать пользователя');
-
-      // 3. Create Organization
+      // 2. Create Organization
       const newOrg: Organization = {
         id: orgId,
         name: formData.orgName,
         email: formData.email,
-        ownerId: authData.user.id,
+        ownerId: 'admin',
         plan: PlanType.FREE,
         status: 'active'
       };
 
       await db.createOrganization(newOrg);
 
-      // 4. Create Admin User in DB
+      // 3. Create Admin User
       const adminUser: User = {
-        id: authData.user.id,
+        id: 'admin',
         name: formData.adminName,
         role: UserRole.EMPLOYER,
         position: 'Администратор',
@@ -119,9 +94,9 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
 
   if (step === 'success') {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 border border-slate-200 p-10 w-full max-w-md text-center space-y-6 animate-fadeIn">
-          <div className="w-20 h-20 bg-emerald-100 text-emerald-600 dark:text-emerald-400 rounded-3xl flex items-center justify-center mx-auto shadow-2xl dark:shadow-slate-900/20 shadow-emerald-50">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
+        <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 p-10 w-full max-w-md text-center space-y-6 animate-fadeIn">
+          <div className="w-20 h-20 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-3xl flex items-center justify-center mx-auto shadow-2xl dark:shadow-slate-900/20 shadow-emerald-50 dark:shadow-none">
             <CheckCircle2 className="w-10 h-10" />
           </div>
           <div>
@@ -131,7 +106,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
               Теперь вы можете войти в систему, используя ID организации и ваш PIN.
             </p>
           </div>
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 text-left space-y-2">
+          <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 text-left space-y-2">
             <div className="flex justify-between text-xs font-bold">
               <span className="text-slate-400 uppercase">ID организации:</span>
               <code className="text-blue-600 dark:text-blue-400">{generatedOrgId}</code>
@@ -154,8 +129,8 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 border border-slate-200 p-8 w-full max-w-md relative overflow-hidden">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
+      <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 p-8 w-full max-w-md relative overflow-hidden">
         <button 
           onClick={onBack}
           className="absolute top-4 left-4 text-slate-400 hover:text-slate-900 dark:text-slate-50 transition-colors"
@@ -198,22 +173,6 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
                   value={formData.email}
                   onChange={e => setFormData({ ...formData, email: e.target.value })}
                   placeholder="admin@company.com"
-                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-11 pr-5 py-3.5 text-sm font-bold focus:border-blue-500 outline-none transition-all"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Пароль администратора</label>
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <input 
-                  type="password"
-                  required
-                  minLength={6}
-                  value={formData.password}
-                  onChange={e => setFormData({ ...formData, password: e.target.value })}
-                  placeholder=" Минимум 6 символов"
                   className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-11 pr-5 py-3.5 text-sm font-bold focus:border-blue-500 outline-none transition-all"
                 />
               </div>

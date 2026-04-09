@@ -20,7 +20,7 @@ import {
   checkDuplicateMachines, fixDuplicateMachines
 } from '../services/cleanupService';
 
-const DEFAULT_ORG_ID = 'initial_org';
+const DEFAULT_ORG_ID = 'default_org';
 
 // Optimized helper: only clean if it's a string and actually needs cleaning
 const cleanValue = (val: any) => {
@@ -158,9 +158,13 @@ export const useAppData = (currentUser: User | null) => {
   const { data: currentOrg, isFetching: isOrgFetching } = useQuery<Organization | null>({
     queryKey: ['organization', orgId],
     queryFn: async () => {
-      const isConnected = await db.checkConnection();
-      if (!isConnected) setDbError('Нет подключения к базе данных.');
-      else setDbError(null);
+      const { isConnected, error } = await db.checkConnection();
+      if (!isConnected) {
+        setDbError(error || 'Нет подключения к базе данных.');
+        return null;
+      } else {
+        setDbError(null);
+      }
 
       const org = await db.getOrganization(orgId);
       if (org) {
@@ -195,9 +199,8 @@ export const useAppData = (currentUser: User | null) => {
           if (parsed.id === orgId) return parsed;
         }
         
-        // Only redirect if we are sure it doesn't exist (not just a network error)
-        // For now, let's just return null and let the UI handle it, or use cache
-        console.error('Organization not found or network error');
+        console.error('Organization not found or network error, falling back to default');
+        setDbError('Организация не найдена. Пожалуйста, проверьте ссылку.');
         return null;
       }
     },
@@ -399,7 +402,11 @@ export const useAppData = (currentUser: User | null) => {
     queryKey: ['systemConfig'],
     queryFn: async () => {
       const config = await db.getSystemConfig();
-      if (config?.super_admin_pin) setSuperAdminPin(config.super_admin_pin);
+      console.log('🛠️ System Config fetched:', config ? 'Success' : 'Empty/Error');
+      if (config?.super_admin_pin) {
+        console.log('🛠️ Super Admin PIN updated from DB');
+        setSuperAdminPin(config.super_admin_pin);
+      }
       if (config?.global_admin_pin) setGlobalAdminPin(config.global_admin_pin);
       return config;
     }
@@ -463,6 +470,12 @@ export const useAppData = (currentUser: User | null) => {
     queryKey: ['initialLogs', orgId],
     queryFn: async () => {
       try {
+        const { isConnected, error: connError } = await db.checkConnection();
+        if (!isConnected) {
+          setDbError(connError || 'Нет подключения к базе данных.');
+          return [];
+        }
+
         const now = getNow();
         const currentMonth = format(now, 'yyyy-MM');
         const prevMonth = format(new Date(now.getFullYear(), now.getMonth() - 1, 1), 'yyyy-MM');
@@ -1213,7 +1226,7 @@ export const useAppData = (currentUser: User | null) => {
     if (currentUser?.id === userId) {
       localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
       localStorage.removeItem(STORAGE_KEYS.LAST_USER_ID);
-      window.location.reload();
+      window.location.href = window.location.pathname;
     } else if (localStorage.getItem(STORAGE_KEYS.LAST_USER_ID) === userId) {
       localStorage.removeItem(STORAGE_KEYS.LAST_USER_ID);
     }
@@ -1274,7 +1287,7 @@ export const useAppData = (currentUser: User | null) => {
       if (data.positions) await db.savePositions(data.positions.map((p: any) => typeof p === 'string' ? p : p.name), currentOrg.id);
       
       alert('Импорт успешен!');
-      window.location.reload();
+      window.location.href = window.location.pathname;
     } catch (e) {
       alert('Ошибка импорта!');
     }
@@ -1358,7 +1371,7 @@ export const useAppData = (currentUser: User | null) => {
       await cleanupDatabase(currentOrg.id);
       await initData(true);
       alert('База данных очищена. Страница будет перезагружена.');
-      window.location.reload();
+      window.location.href = window.location.pathname;
     }
   };
 
@@ -1375,7 +1388,7 @@ export const useAppData = (currentUser: User | null) => {
         alert('Возникли ошибки: ' + res.errors.join(', '));
       } else {
         alert(`Удалено фото из ${res.photosRemoved} записей. Страница будет перезагружена.`);
-        window.location.reload();
+        window.location.href = window.location.pathname;
       }
     }
   };
@@ -1445,7 +1458,7 @@ export const useAppData = (currentUser: User | null) => {
         alert('Возникли ошибки при объединении сотрудников: ' + resUsers.errors.join(', '));
       } else {
         alert(`Объединение завершено.\nСотрудники: объединено групп ${resUsers.mergedGroups}, удалено ${resUsers.usersDeleted}.\nСтанки: удалено дубликатов ${fixedMachines}.\nСтраница будет перезагружена.`);
-        window.location.reload();
+        window.location.href = window.location.pathname;
       }
     }
   };
@@ -1492,7 +1505,7 @@ export const useAppData = (currentUser: User | null) => {
         }
         
         alert(`Исправлено:\nДолжностей: ${fixedPos}\nАктивных смен: ${fixedShifts}\n\nПожалуйста, перезагрузите страницу.`);
-        window.location.reload();
+        window.location.href = window.location.pathname;
       }
     } else {
       alert(message + '\nВсе в порядке!');

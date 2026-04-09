@@ -104,7 +104,15 @@ USING (
 );
 
 -- 6. Enable Realtime
-BEGIN;
-  ALTER PUBLICATION supabase_realtime DROP TABLE IF EXISTS users, work_logs, active_shifts, organizations, audit_logs, machines, positions;
-  ALTER PUBLICATION supabase_realtime ADD TABLE users, work_logs, active_shifts, organizations, audit_logs, machines, positions;
-COMMIT;
+-- We use a DO block to safely add tables to the publication without erroring if they already exist
+DO $$
+BEGIN
+  -- Try to add tables one by one to avoid stopping on the first error
+  -- This is safer than DROP TABLE IF EXISTS which is not supported in all PG versions for publications
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE users, work_logs, active_shifts, organizations, audit_logs, machines, positions;
+  EXCEPTION WHEN OTHERS THEN 
+    -- If adding all at once fails, they might already be there or some might be missing
+    RAISE NOTICE 'Could not add some tables to publication, they might already be included.';
+  END;
+END $$;

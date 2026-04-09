@@ -123,8 +123,12 @@ const processQueue = async () => {
         parse_mode: 'HTML'
       })
     });
-  } catch (e) {
-    console.error('Failed to send Telegram notification:', e);
+  } catch (e: any) {
+    if (e.message === 'Failed to fetch') {
+      console.error('Ошибка сети: Не удалось подключиться к Telegram API. Проверьте подключение к интернету.');
+    } else {
+      console.error('Failed to send Telegram notification:', e);
+    }
   } finally {
     isProcessing = false;
     // Small delay to prevent hitting API limits too quickly
