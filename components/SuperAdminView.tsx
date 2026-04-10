@@ -3,9 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { Organization, PlanType, Plan, PromoCode, User, UserRole } from '../types';
 import { db, supabase } from '../lib/supabase';
 import { STORAGE_KEYS } from '../constants';
-import { Users, Building2, CreditCard, Activity, ShieldCheck, Search, RefreshCw, ExternalLink, Settings2, X, Check, Plus, LayoutGrid, Zap, Briefcase, Save, Camera, Moon, BarChart3, Megaphone, Ticket, Trash2, Database, AlertCircle, PlayCircle, Bell, MessageSquare, History, HelpCircle } from 'lucide-react';
+import { Users, Building2, CreditCard, Activity, ShieldCheck, Search, RefreshCw, ExternalLink, Settings2, X, Check, Plus, LayoutGrid, Zap, Briefcase, Save, Camera, Moon, BarChart3, Megaphone, Ticket, Trash2, Database, AlertCircle, PlayCircle, Bell, MessageSquare, History, HelpCircle, FileText } from 'lucide-react';
 import { SupportChat } from './employer/SupportChat';
 import { DocumentationView } from './DocumentationView';
+import { RequisitesView } from './RequisitesView';
 
 interface SuperAdminViewProps {
   onLogout: () => void;
@@ -32,7 +33,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [editingOrg, setEditingOrg] = useState<Organization | null>(null);
   const [editingAdmin, setEditingAdmin] = useState<User | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'orgs' | 'plans' | 'marketing' | 'diagnostics' | 'app_diagnostics' | 'support' | 'instructions'>('orgs');
+  const [activeTab, setActiveTab] = useState<'orgs' | 'plans' | 'marketing' | 'diagnostics' | 'app_diagnostics' | 'support' | 'instructions' | 'requisites' | 'system'>('orgs');
   const [viewingUsersOrg, setViewingUsersOrg] = useState<{ id: string; name: string } | null>(null);
   const [orgUsers, setOrgUsers] = useState<User[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
@@ -573,6 +574,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     { id: 'app_diagnostics', name: 'Функции', icon: Activity },
     { id: 'system', name: 'Система', icon: ShieldCheck },
     { id: 'support', name: 'Поддержка', icon: MessageSquare, badge: unreadSupportMessages },
+    { id: 'requisites', name: 'Реквизиты', icon: FileText },
     { id: 'instructions', name: 'Инструкция', icon: HelpCircle },
   ] as const;
 
@@ -909,7 +911,11 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               unreadByOrg={unreadByOrg}
             />
           </div>
-        ) : activeTab === ('system' as any) ? (
+        ) : activeTab === 'requisites' ? (
+          <div className="max-w-4xl mx-auto animate-fadeIn">
+            <RequisitesView />
+          </div>
+        ) : activeTab === 'system' ? (
           <div className="max-w-2xl mx-auto space-y-8 animate-fadeIn">
             <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden">
               <div className="p-8 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">

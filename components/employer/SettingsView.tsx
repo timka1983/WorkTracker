@@ -781,6 +781,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
+        <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Реквизиты организации</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <input placeholder="Название организации" value={currentOrg?.clientRequisites?.name || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, name: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200" />
+          <input placeholder="ИНН" value={currentOrg?.clientRequisites?.inn || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, inn: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200" />
+          <input placeholder="КПП" value={currentOrg?.clientRequisites?.kpp || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, kpp: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200" />
+          <input placeholder="Адрес" value={currentOrg?.clientRequisites?.address || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, address: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200 md:col-span-2" />
+          <textarea placeholder="Банковские реквизиты" value={currentOrg?.clientRequisites?.bankDetails || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, bankDetails: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200 md:col-span-2" />
+        </div>
+      </section>
+
+      <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
         <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Файлы и Бэкап</h3>
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 leading-relaxed">Система хранит данные в облаке Supabase и локально. Рекомендуется периодически экспортировать данные.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

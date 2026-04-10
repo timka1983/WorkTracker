@@ -124,7 +124,8 @@ export const STORAGE_KEYS = {
   ORG_DATA: 'timesheet_org_data',
   PROMO_CODES: 'timesheet_promo_codes',
   OFFLINE_QUEUE: 'timesheet_offline_queue',
-  AUDIT_LOGS: 'timesheet_audit_logs'
+  AUDIT_LOGS: 'timesheet_audit_logs',
+  TRUSTED_DEVICE: 'timesheet_trusted_device'
 };
 
 const savedLogs = localStorage.getItem(STORAGE_KEYS.WORK_LOGS);

@@ -109,7 +109,40 @@ export interface Organization {
   nightShiftBonus?: number; // Global night shift bonus in minutes
   debugEnabled?: boolean; // Enable debug info for this organization
   invoiceRequested?: boolean; // Track invoice request status
+  contractNumber?: string;
+  contractDate?: string;
+  clientRequisites?: {
+    name: string;
+    inn: string;
+    kpp: string;
+    address: string;
+    bankDetails: string;
+  };
   createdAt?: string; // ISO timestamp
+}
+
+export interface ReceivingOrganization {
+  id: string;
+  name: string;
+  abbreviation: string;
+  requisites: {
+    inn: string;
+    kpp: string;
+    address: string;
+    bankDetails: string;
+  };
+  isDefault: boolean;
+}
+
+export interface Invoice {
+  id: string;
+  organizationId: string;
+  contractNumber: string;
+  date: string;
+  planType: PlanType;
+  amount: number;
+  termMonths: number;
+  status: 'pending' | 'paid' | 'cancelled';
 }
 
 export const FIXED_POSITION_TURNER = 'Токарь';

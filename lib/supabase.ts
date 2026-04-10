@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import bcrypt from 'bcryptjs';
-import { Organization, User } from '../types';
+import { Organization, User, Invoice, ReceivingOrganization } from '../types';
 import { STORAGE_KEYS } from '../constants';
 
 const getEnv = (name: string): string => {
@@ -1634,6 +1634,16 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
   },
   createOrganization: async (org: Organization) => {
     if (!checkConfig()) return;
+    
+    // Generate contract number
+    const { count } = await supabase.from('organizations').select('*', { count: 'exact', head: true });
+    const nextNumber = (count || 0) + 1;
+    const date = new Date();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    const contractNumber = `${nextNumber}-${month}/${year}`;
+    const contractDate = date.toISOString().split('T')[0];
+
     const { error } = await supabase.from('organizations').upsert({
       id: org.id,
       name: org.name,
@@ -1649,7 +1659,9 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       auto_shift_completion: org.autoShiftCompletion,
       max_shift_duration: org.maxShiftDuration,
       round_shift_minutes: org.roundShiftMinutes,
-      night_shift_bonus: org.nightShiftBonus
+      night_shift_bonus: org.nightShiftBonus,
+      contract_number: contractNumber,
+      contract_date: contractDate
     }, { onConflict: 'id' });
     
     if (error && error.code !== '23505') {
@@ -2069,6 +2081,41 @@ DROP POLICY IF EXISTS "Allow public read" ON payment_history;
 CREATE POLICY "Allow public read" ON payment_history FOR SELECT USING (true);
 DROP POLICY IF EXISTS "Allow public insert" ON payment_history;
 CREATE POLICY "Allow public insert" ON payment_history FOR INSERT WITH CHECK (true);
+-- 16. Receiving Organizations
+CREATE TABLE IF NOT EXISTS receiving_organizations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  abbreviation TEXT,
+  requisites JSONB DEFAULT '{}',
+  is_default BOOLEAN DEFAULT false
+);
+ALTER TABLE receiving_organizations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public read" ON receiving_organizations;
+CREATE POLICY "Allow public read" ON receiving_organizations FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert" ON receiving_organizations;
+CREATE POLICY "Allow public insert" ON receiving_organizations FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow public update" ON receiving_organizations;
+CREATE POLICY "Allow public update" ON receiving_organizations FOR UPDATE USING (true);
+
+-- 17. Invoices
+CREATE TABLE IF NOT EXISTS invoices (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  contract_number TEXT NOT NULL,
+  date TEXT NOT NULL,
+  plan_type TEXT NOT NULL,
+  amount NUMERIC NOT NULL,
+  term_months INTEGER NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public read" ON invoices;
+CREATE POLICY "Allow public read" ON invoices FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert" ON invoices;
+CREATE POLICY "Allow public insert" ON invoices FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow public update" ON invoices;
+CREATE POLICY "Allow public update" ON invoices FOR UPDATE USING (true);
     `;
   },
   saveSubscriptionPayment: async (payment: any) => {
@@ -2103,7 +2150,7 @@ CREATE POLICY "Allow public insert" ON payment_history FOR INSERT WITH CHECK (tr
     }
 
     try {
-      const tablesToCheck = ['organizations', 'users', 'work_logs', 'machines', 'positions', 'plans', 'promo_codes', 'active_shifts', 'system_config', 'payroll_snapshots', 'payroll_payments', 'payroll_periods', 'payment_history', 'support_messages'];
+      const tablesToCheck = ['organizations', 'users', 'work_logs', 'machines', 'positions', 'plans', 'promo_codes', 'active_shifts', 'system_config', 'payroll_snapshots', 'payroll_payments', 'payroll_periods', 'payment_history', 'support_messages', 'invoices', 'receiving_organizations'];
       results.storage = {};
       
       try {
@@ -2997,5 +3044,60 @@ $$;
       return { error: 'Таблица payroll_periods не найдена в базе данных. Пожалуйста, зайдите в панель Супер-Админа -> Диагностика и выполните SQL-скрипт для ее создания.' };
     }
     return { error };
+  },
+  getReceivingOrganizations: async () => {
+    if (!checkConfig()) return [];
+    const { data, error } = await supabase.from('receiving_organizations').select('*');
+    if (error) {
+      console.error('Error fetching receiving organizations:', error);
+      return [];
+    }
+    return data.map(d => ({
+      id: d.id,
+      name: d.name,
+      abbreviation: d.abbreviation,
+      requisites: d.requisites,
+      isDefault: d.is_default
+    }));
+  },
+  saveReceivingOrganization: async (org: ReceivingOrganization) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('receiving_organizations').upsert({
+      id: org.id,
+      name: org.name,
+      abbreviation: org.abbreviation,
+      requisites: org.requisites,
+      is_default: org.isDefault
+    });
+    return { error };
+  },
+  saveInvoice: async (invoice: Invoice) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('invoices').upsert({
+      id: invoice.id,
+      organization_id: invoice.organizationId,
+      contract_number: invoice.contractNumber,
+      date: invoice.date,
+      plan_type: invoice.planType,
+      amount: invoice.amount,
+      term_months: invoice.termMonths,
+      status: invoice.status
+    });
+    return { error };
+  },
+  getInvoices: async (orgId: string) => {
+    if (!checkConfig()) return [];
+    const { data, error } = await supabase.from('invoices').select('*').eq('organization_id', orgId);
+    if (error || !data) return [];
+    return data.map(d => ({ 
+      id: d.id,
+      organizationId: d.organization_id, 
+      contractNumber: d.contract_number, 
+      date: d.date,
+      planType: d.plan_type,
+      amount: d.amount,
+      termMonths: d.term_months,
+      status: d.status
+    }));
   },
 };

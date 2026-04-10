@@ -40,6 +40,16 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
 }) => {
   const [showEmployerLogin, setShowEmployerLogin] = useState(false);
 
+  React.useEffect(() => {
+    const isTrusted = localStorage.getItem(STORAGE_KEYS.TRUSTED_DEVICE) === 'true';
+    if (isTrusted && !selectedLoginUser) {
+      const adminUser = users.find(u => u.isAdmin || u.id === 'admin');
+      if (adminUser) {
+        setSelectedLoginUser(adminUser);
+      }
+    }
+  }, [users, selectedLoginUser, setSelectedLoginUser]);
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 p-8 w-full max-w-md relative overflow-hidden">

@@ -83,6 +83,7 @@ const EmployerLogin: React.FC<EmployerLoginProps> = ({ onBack, onSuccess }) => {
           }
 
           localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(fallbackAdmin));
+          localStorage.setItem(STORAGE_KEYS.TRUSTED_DEVICE, 'true');
           // Link session to user
           supabase.rpc('link_current_session_to_user', { target_user_id: fallbackAdmin.id });
         } else {
@@ -95,6 +96,7 @@ const EmployerLogin: React.FC<EmployerLoginProps> = ({ onBack, onSuccess }) => {
             organizationId: userData.organization_id || userData.organizationId
           };
           localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(adminUser));
+          localStorage.setItem(STORAGE_KEYS.TRUSTED_DEVICE, 'true');
           // Link session to user
           supabase.rpc('link_current_session_to_user', { target_user_id: adminUser.id });
         }

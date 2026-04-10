@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Organization, PlanType, User, UserRole } from '../types';
-import { db } from '../lib/supabase';
+import { db, supabase } from '../lib/supabase';
 import { Building2, Mail, User as UserIcon, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
 
 interface RegistrationFormProps {
@@ -17,6 +17,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
   const [formData, setFormData] = useState({
     orgName: '',
     email: '',
+    password: '',
     adminName: '',
     adminPin: '0000'
   });
@@ -71,7 +72,15 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
 
       await db.createOrganization(newOrg);
 
-      // 3. Create Admin User
+      // 3. Create Admin User in Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: formData.email,
+        password: formData.password,
+      });
+
+      if (authError) throw authError;
+
+      // 4. Create Admin User record
       const adminUser: User = {
         id: 'admin',
         name: formData.adminName,
@@ -79,7 +88,8 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
         position: 'Администратор',
         pin: formData.adminPin,
         isAdmin: true,
-        organizationId: orgId
+        organizationId: orgId,
+        supabaseAuthId: authData.user?.id
       };
 
       await db.upsertUser(adminUser, orgId);
@@ -173,6 +183,21 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
                   value={formData.email}
                   onChange={e => setFormData({ ...formData, email: e.target.value })}
                   placeholder="admin@company.com"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-11 pr-5 py-3.5 text-sm font-bold focus:border-blue-500 outline-none transition-all"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-black text-slate-400 uppercase ml-1 mb-1.5 tracking-wider">Пароль</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input 
+                  type="password"
+                  required
+                  value={formData.password}
+                  onChange={e => setFormData({ ...formData, password: e.target.value })}
+                  placeholder="••••••••"
                   className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-11 pr-5 py-3.5 text-sm font-bold focus:border-blue-500 outline-none transition-all"
                 />
               </div>
