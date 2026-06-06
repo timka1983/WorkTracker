@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState, useEffect } from 'react';
 import { User, UserRole, Organization } from '../types';
 import { STORAGE_KEYS } from '../constants';
@@ -73,8 +72,8 @@ const Layout: React.FC<LayoutProps> = ({
 
     fetchUnreadCount();
     
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
     }
 
     const channel = supabase

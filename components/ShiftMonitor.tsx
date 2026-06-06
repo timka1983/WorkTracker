@@ -82,14 +82,24 @@ export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
         }
         
         if (notifiedStage2.current !== activeShift.id) {
-          // Send notification / Check location
           if (Notification.permission === 'granted') {
-            new Notification(autoShift?.enabled === true ? 'Внимание! Смена будет закрыта' : 'Внимание! Смена превысила лимит', {
-              body: 'Вы превысили максимальное время смены.',
-              icon: '/icons/icon-192.png'
-            });
+            const notifTitle = autoShift?.enabled === true
+              ? 'Внимание! Смена будет закрыта'
+              : 'Внимание! Смена превысила лимит';
+            navigator.serviceWorker.ready
+              .then(reg => reg.showNotification(notifTitle, {
+                body: 'Вы превысили максимальное время смены.',
+                icon: '/icons/icon-192.png',
+                badge: '/icons/badge-72.png',
+                tag: `shift-stage2-${activeShift.id}`,
+              } as NotificationOptions))
+              .catch(() => {
+                new Notification(notifTitle, {
+                  body: 'Вы превысили максимальное время смены.',
+                  icon: '/icons/icon-192.png',
+                });
+              });
           }
-          // Here we would check location logic
           if (autoShift?.enabled === true) {
             checkLocationAndClose(activeShift.id, startTime, maxDuration);
           }
@@ -104,11 +114,20 @@ export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
         setMessage(autoShift?.enabled === true ? 'Вы забыли закрыть смену? Проверка местоположения...' : 'Вы забыли закрыть смену?');
         
         if (notifiedStage1.current !== activeShift.id) {
-           if (Notification.permission === 'granted') {
-            new Notification('Вы забыли закрыть смену?', {
-              body: 'Прошло ' + firstInterval + ' минут после окончания смены.',
-              icon: '/icons/icon-192.png'
-            });
+          if (Notification.permission === 'granted') {
+            navigator.serviceWorker.ready
+              .then(reg => reg.showNotification('Вы забыли закрыть смену?', {
+                body: `Прошло ${firstInterval} минут после окончания смены.`,
+                icon: '/icons/icon-192.png',
+                badge: '/icons/badge-72.png',
+                tag: `shift-stage1-${activeShift.id}`,
+              } as NotificationOptions))
+              .catch(() => {
+                new Notification('Вы забыли закрыть смену?', {
+                  body: `Прошло ${firstInterval} минут после окончания смены.`,
+                  icon: '/icons/icon-192.png',
+                });
+              });
           }
           if (autoShift?.enabled === true) {
             checkLocationAndClose(activeShift.id, startTime, maxDuration);
@@ -135,14 +154,22 @@ export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
           const distance = getDistanceFromLatLonInM(latitude, longitude, targetLat, targetLng);
           
           if (distance > radius) {
-            // User is far away, probably forgot to close
             const forceEndTime = addMinutes(start, max).toISOString();
             onForceClose(shiftId, forceEndTime);
-            // Notify user
             if (Notification.permission === 'granted') {
-               new Notification('Смена закрыта автоматически', {
-                 body: 'Вы покинули рабочую зону.',
-               });
+              navigator.serviceWorker.ready
+                .then(reg => reg.showNotification('Смена закрыта автоматически', {
+                  body: 'Вы покинули рабочую зону.',
+                  icon: '/icons/icon-192.png',
+                  badge: '/icons/badge-72.png',
+                  tag: `shift-autoclose-${shiftId}`,
+                } as NotificationOptions))
+                .catch(() => {
+                  new Notification('Смена закрыта автоматически', {
+                    body: 'Вы покинули рабочую зону.',
+                    icon: '/icons/icon-192.png',
+                  });
+                });
             }
           }
         },

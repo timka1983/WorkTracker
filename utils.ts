@@ -128,6 +128,11 @@ export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2
   return d;
 };
 
+// Дедупликация: храним последние отправленные теги с таймстампом.
+// Одно и то же уведомление не отправляется чаще раза в 10 секунд.
+const _notifDedup = new Map<string, number>();
+const NOTIF_DEDUP_MS = 10_000;
+
 export const sendNotification = async (title: string, body: string, options?: {
   tag?: string;
   url?: string;
@@ -135,33 +140,63 @@ export const sendNotification = async (title: string, body: string, options?: {
 }) => {
   if (!('Notification' in window)) return;
 
-  // Запрашиваем разрешение если ещё не дано
   if (Notification.permission === 'default') {
     await Notification.requestPermission();
   }
 
   if (Notification.permission !== 'granted') return;
 
-  try {
-    // Всегда используем Service Worker — работает когда приложение свёрнуто
-    const reg = await navigator.serviceWorker.ready;
-    const swOptions: SWNotificationOptions = {
-      body,
-      icon: options?.icon || '/icons/icon-192.png',
-      badge: '/icons/badge-72.png',
-      tag: options?.tag || 'worktracker-default',
-      renotify: true,
-      data: { url: options?.url || '/' },
-    };
-    await reg.showNotification(title, swOptions);
-  } catch (err) {
-    // Фоллбэк для браузеров без полной SW-поддержки
-    console.warn('SW notification failed, fallback:', err);
-    try {
-      new Notification(title, { body, icon: '/icons/icon-192.png' });
-    } catch (e) {
-      console.error('Notification fallback failed:', e);
+  // Уникальный тег на основе содержимого — каждое уведомление отличается
+  // от других по тексту, не затирает предыдущие с тем же статическим тегом
+  const tag = options?.tag || `wt-${title}-${body}`.replace(/\s+/g, '-').slice(0, 64);
+
+  // Дедупликация: пропускаем если такой же тег был < 10 сек назад
+  const lastSent = _notifDedup.get(tag);
+  if (lastSent && Date.now() - lastSent < NOTIF_DEDUP_MS) return;
+  _notifDedup.set(tag, Date.now());
+
+  // Чистим старые записи дедупа чтобы Map не рос бесконечно
+  if (_notifDedup.size > 50) {
+    const cutoff = Date.now() - NOTIF_DEDUP_MS * 6;
+    for (const [k, v] of _notifDedup) {
+      if (v < cutoff) _notifDedup.delete(k);
     }
+  }
+
+  const swOptions: SWNotificationOptions = {
+    body,
+    icon: options?.icon || '/icons/icon-192.png',
+    badge: '/icons/badge-72.png',
+    tag,
+    renotify: true,
+    data: { url: options?.url || '/' },
+  };
+
+  // Пробуем через SW с таймаутом 3 сек — если SW не готов, не висим вечно
+  try {
+    const swReady = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('SW ready timeout')), 3000)
+      ),
+    ]);
+    await (swReady as ServiceWorkerRegistration).showNotification(title, swOptions);
+    return;
+  } catch (err) {
+    console.warn('[Notif] SW path failed, fallback to Notification API:', err);
+  }
+
+  // Fallback: прямой Notification API (работает пока вкладка открыта)
+  try {
+    const n = new Notification(title, {
+      body,
+      icon: swOptions.icon,
+      tag,
+    });
+    // Закрываем через 8 сек чтобы не засорять уведомления на десктопе
+    setTimeout(() => n.close(), 8000);
+  } catch (e) {
+    console.error('[Notif] Fallback also failed:', e);
   }
 };
 
