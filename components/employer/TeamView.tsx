@@ -12,8 +12,8 @@ interface TeamViewProps {
   planLimits: PlanLimits;
   currentOrg: Organization | null;
   isUserLimitReached: boolean;
-  newUser: { name: string; pin: string; position: string; department: string; birthday: string; requirePhoto: boolean; branchId?: string };
-  setNewUser: (user: { name: string; pin: string; position: string; department: string; birthday: string; requirePhoto: boolean; branchId?: string }) => void;
+  newUser: { name: string; pin: string; position: string; department: string; birthday: string; phone: string; requirePhoto: boolean; branchId?: string };
+  setNewUser: (user: { name: string; pin: string; position: string; department: string; birthday: string; phone: string; requirePhoto: boolean; branchId?: string }) => void;
   handleAddUser: (e: React.FormEvent) => void;
   dashboardStats: any;
   machines: Machine[];
@@ -24,6 +24,7 @@ interface TeamViewProps {
   branches: Branch[];
   getArchivedUsers: () => Promise<User[] | null>;
   handleRestoreUser: (id: string) => Promise<{ error: any }>;
+  setViewMode?: (mode: 'billing') => void;
 }
 
 export const TeamView: React.FC<TeamViewProps> = ({
@@ -43,7 +44,8 @@ export const TeamView: React.FC<TeamViewProps> = ({
   onDeleteUser,
   branches,
   getArchivedUsers,
-  handleRestoreUser
+  handleRestoreUser,
+  setViewMode
 }) => {
   const [archiveConfirm, setArchiveConfirm] = useState<{ isOpen: boolean; userId: string; userName: string }>({
     isOpen: false,
@@ -92,7 +94,8 @@ export const TeamView: React.FC<TeamViewProps> = ({
     sendTelegramNotification(
       currentOrg.telegramSettings.botToken,
       chatId,
-      `Привет, ${user.name}! Твой QR-код для входа в WorkTracker PRO: ${appUrl}. Отсканируй его, чтобы быстро перейти к странице входа.`
+      `Привет, ${user.name}! Твой QR-код для входа в WorkTracker PRO: ${appUrl}. Отсканируй его, чтобы быстро перейти к странице входа.`,
+      currentOrg?.telegramSettings?.enabled
     );
     alert('Ссылка на вход отправлена в Telegram!');
   };
@@ -111,7 +114,7 @@ export const TeamView: React.FC<TeamViewProps> = ({
           {isUserLimitReached ? (
             <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-2xl border border-blue-100 dark:border-blue-800 text-center space-y-3">
                <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 leading-tight">Достигнут лимит сотрудников для тарифа {currentOrg?.plan}</p>
-               <button onClick={() => window.location.href='#pricing'} className="w-full py-3 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl dark:shadow-slate-900/20 shadow-blue-200">Расширить лимит</button>
+               <button onClick={() => setViewMode ? setViewMode('billing') : window.location.href='#pricing'} className="w-full py-3 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl dark:shadow-slate-900/20 shadow-blue-200">Расширить лимит</button>
             </div>
           ) : (
             <form onSubmit={handleAddUser} className="space-y-4">
@@ -132,14 +135,26 @@ export const TeamView: React.FC<TeamViewProps> = ({
               )}
               <input type="text" maxLength={4} value={newUser.pin} onChange={e => setNewUser({...newUser, pin: e.target.value.replace(/[^0-9]/g, '')})} placeholder="PIN (0000)" className="w-full border-2 border-slate-100 dark:border-slate-800 rounded-2xl px-4 py-3 text-sm font-mono bg-white dark:bg-slate-900 dark:text-slate-100 shadow-sm dark:shadow-none" />
               
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Дата рождения</label>
-                <input 
-                  type="date" 
-                  value={newUser.birthday} 
-                  onChange={e => setNewUser({...newUser, birthday: e.target.value})} 
-                  className="w-full border-2 border-slate-100 dark:border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold bg-white dark:bg-slate-900 dark:text-slate-100 shadow-sm dark:shadow-none" 
-                />
+              <div className="flex flex-col sm:flex-row gap-4">
+                <div className="space-y-1 flex-1 min-w-0">
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Дата рождения</label>
+                  <input 
+                    type="date" 
+                    value={newUser.birthday} 
+                    onChange={e => setNewUser({...newUser, birthday: e.target.value})} 
+                    className="w-full border-2 border-slate-100 dark:border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold bg-white dark:bg-slate-900 dark:text-slate-100 shadow-sm dark:shadow-none" 
+                  />
+                </div>
+                <div className="space-y-1 flex-1 min-w-0">
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Номер телефона</label>
+                  <input 
+                    type="tel" 
+                    placeholder="+7 (999) 000-00-00"
+                    value={newUser.phone || ''} 
+                    onChange={e => setNewUser({...newUser, phone: e.target.value})} 
+                    className="w-full border-2 border-slate-100 dark:border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold bg-white dark:bg-slate-900 dark:text-slate-100 shadow-sm dark:shadow-none" 
+                  />
+                </div>
               </div>
 
               <div className={`flex items-center gap-3 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border-2 border-slate-100 dark:border-slate-800 ${!planLimits.features.photoCapture ? 'opacity-50' : ''}`}>
@@ -214,6 +229,11 @@ export const TeamView: React.FC<TeamViewProps> = ({
                        {branches.find(b => b.id === u.branchId) && (
                          <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[9px] font-bold rounded-full border border-slate-200 dark:border-slate-700 truncate max-w-[100px]">
                            {branches.find(b => b.id === u.branchId)?.name}
+                         </span>
+                       )}
+                       {u.phone && (
+                         <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[9px] font-bold rounded-full border border-slate-200 dark:border-slate-700 truncate">
+                           {u.phone}
                          </span>
                        )}
                     </div>

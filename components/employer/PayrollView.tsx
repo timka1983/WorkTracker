@@ -4,10 +4,11 @@ import { calculateMonthlyPayroll, getEffectivePayrollConfig, formatDurationShort
 import { format } from 'date-fns';
 import { ScheduleModal } from '../employee/ScheduleModal';
 import { generatePayslipPDF, generatePayrollReportPDF } from '../../utils/pdfGenerator';
-import { ChevronDown, ChevronUp, RefreshCw, Save, CheckCircle2, Plus, Trash2, Wallet, Coins, Calendar, FileText, History, Printer } from 'lucide-react';
+import { ChevronDown, ChevronUp, RefreshCw, Save, CheckCircle2, Plus, Trash2, Wallet, Coins, Calendar, FileText, History, Printer, Scale } from 'lucide-react';
 import { db } from '../../lib/supabase';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { DEFAULT_PAYROLL_CONFIG } from '../../constants';
+import { ReconciliationReportModal } from './ReconciliationReportModal';
 
 interface PayrollViewProps {
   users: User[];
@@ -71,17 +72,23 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   const [selectedUserForDetails, setSelectedUserForDetails] = useState<User | null>(null); // New state
 
   const [snapshots, setSnapshots] = useState<PayrollSnapshot[]>([]);
+  const [allSnapshots, setAllSnapshots] = useState<PayrollSnapshot[]>([]);
+  const [allPayments, setAllPayments] = useState<PayrollPayment[]>([]);
   const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod | null>(null);
   const [isChangingStatus, setIsChangingStatus] = useState(false);
+  const [showReconciliationModal, setShowReconciliationModal] = useState(false);
 
   const fetchData = async () => {
     if (!currentOrg) return;
-    const [data, periodData] = await Promise.all([
+    const [data, periodData, allData] = await Promise.all([
       db.getPayrollSnapshots(currentOrg.id, filterMonth),
-      db.getPayrollPeriod(currentOrg.id, filterMonth)
+      db.getPayrollPeriod(currentOrg.id, filterMonth),
+      db.getAllPayrollData(currentOrg.id)
     ]);
     setSnapshots(data);
     setPayrollPeriod(periodData);
+    setAllSnapshots(allData.snapshots);
+    setAllPayments(allData.payments);
   };
 
   useEffect(() => {
@@ -237,7 +244,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               </button>
             </div>
           </div>
-         <div className="flex gap-3">
+         <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0 sm:pb-0 sm:overflow-visible [&>button]:shrink-0 scrollbar-hide w-full sm:w-auto">
            <button 
              onClick={handleRecalculate} 
              disabled={isRecalculating || isPaid}
@@ -249,6 +256,10 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
            <button onClick={() => setShowBonusModal(true)} disabled={isPaid} className="px-3 py-3 md:px-6 md:py-3 bg-green-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-green-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-green-200 dark:shadow-none hover:shadow-green-300 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
             <span className="hidden md:inline">Общая премия</span>
             <Coins className="w-5 h-5 md:hidden" />
+          </button>
+          <button onClick={() => setShowReconciliationModal(true)} className="px-3 py-3 md:px-6 md:py-3 bg-amber-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-amber-700 transition-all shadow-xl dark:shadow-slate-900/20 shadow-amber-200 dark:shadow-none hover:shadow-amber-300 active:scale-95">
+            <span className="hidden md:inline">Взаиморасчеты</span>
+            <Scale className="w-5 h-5 md:hidden" />
           </button>
           <button onClick={handleExportAll} className="px-3 py-3 md:px-6 md:py-3 bg-slate-900 dark:bg-slate-700 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-600 transition-all shadow-xl dark:shadow-slate-900/20 shadow-slate-200 dark:shadow-none hover:shadow-blue-200 active:scale-95">
             <span className="hidden md:inline">Экспорт</span>
@@ -295,6 +306,16 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
         />
       )}
 
+      {showReconciliationModal && (
+        <ReconciliationReportModal
+          isOpen={showReconciliationModal}
+          onClose={() => setShowReconciliationModal(false)}
+          users={employees}
+          allSnapshots={allSnapshots}
+          allPayments={allPayments}
+        />
+      )}
+
       <div className="overflow-x-auto hidden md:block">
         <table className="w-full text-left border-collapse">
           <thead>
@@ -323,6 +344,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               <th className="p-4 text-center">Итого часов</th>
               <th className="p-4 text-right">Начислено</th>
               {planLimits.features.payments && <th className="p-4 text-right">К выплате</th>}
+              <th className="p-4 text-right">Общий баланс</th>
             </tr>
           </thead>
           <tbody>
@@ -344,6 +366,15 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                const userPayments = payments.filter(p => p.userId === emp.id && p.date.startsWith(filterMonth));
                const totalPaid = userPayments.reduce((sum, p) => sum + p.amount, 0);
                const balance = payroll.totalSalary - totalPaid;
+
+               // Calculate cumulative balance
+               const totalEarningsAllTime = allSnapshots
+                 .filter(s => s.userId === emp.id)
+                 .reduce((sum, s) => sum + s.totalSalary, 0);
+               const totalPaidAllTime = allPayments
+                 .filter(p => p.userId === emp.id)
+                 .reduce((sum, p) => sum + p.amount, 0);
+               const cumulativeBalance = totalEarningsAllTime - totalPaidAllTime;
 
                const usedMachineIds = [...new Set(empLogs.filter(l => l.machineId && l.entryType === EntryType.WORK).map(l => l.machineId!))];
                const hasSubRows = usedMachineIds.length > 0 || userPayments.length > 0;
@@ -449,6 +480,9 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                           {balance.toLocaleString('ru-RU')} ₽
                         </td>
                       )}
+                      <td className={`p-4 text-right font-black text-xs ${cumulativeBalance > 0 ? 'text-emerald-600 dark:text-emerald-400' : cumulativeBalance < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'}`}>
+                        {cumulativeBalance.toLocaleString('ru-RU')} ₽
+                      </td>
                    </tr>
                    {isExpanded && usedMachineIds.map(mId => {
                      const machineName = machines.find(m => m.id === mId)?.name || 'Работа';
@@ -516,6 +550,23 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                  <span className="text-slate-500 dark:text-slate-400">Начислено:</span>
                  <span className="font-bold text-slate-900 dark:text-slate-100">{payroll.totalSalary.toLocaleString('ru-RU')} ₽</span>
                </div>
+               {(() => {
+                 const totalEarningsAllTime = allSnapshots
+                   .filter(s => s.userId === emp.id)
+                   .reduce((sum, s) => sum + s.totalSalary, 0);
+                 const totalPaidAllTime = allPayments
+                   .filter(p => p.userId === emp.id)
+                   .reduce((sum, p) => sum + p.amount, 0);
+                 const cumulativeBalance = totalEarningsAllTime - totalPaidAllTime;
+                 return (
+                   <div className="flex justify-between items-center text-xs">
+                     <span className="text-slate-500 dark:text-slate-400">Общий баланс:</span>
+                     <span className={`font-black ${cumulativeBalance > 0 ? 'text-emerald-600 dark:text-emerald-400' : cumulativeBalance < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-slate-100'}`}>
+                       {cumulativeBalance.toLocaleString('ru-RU')} ₽
+                     </span>
+                   </div>
+                 );
+               })()}
              </div>
            );
         })}

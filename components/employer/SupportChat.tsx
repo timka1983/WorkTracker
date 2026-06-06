@@ -78,7 +78,7 @@ export const SupportChat: React.FC<SupportChatProps> = ({ currentUser, orgId, on
     }
 
     const channel = supabase
-      .channel(`support_chat_${orgId || 'admin'}_${selectedOrgId}_${Date.now()}`)
+      .channel(`support_chat_${orgId || 'admin'}_${selectedOrgId}`)
       .on('postgres_changes', { 
         event: 'INSERT', 
         schema: 'public', 
@@ -141,13 +141,12 @@ export const SupportChat: React.FC<SupportChatProps> = ({ currentUser, orgId, on
 
   useEffect(() => {
     if (onOrgSelect) {
-      if (isSuperAdmin && selectedOrgId !== 'all') {
-        onOrgSelect(selectedOrgId);
-      } else if (!isSuperAdmin && orgId) {
-        onOrgSelect(orgId);
+      const targetId = isSuperAdmin ? (selectedOrgId !== 'all' ? selectedOrgId : null) : orgId;
+      if (targetId) {
+        onOrgSelect(targetId);
       }
     }
-  }, [selectedOrgId, orgId, isSuperAdmin, onOrgSelect, messages.length]);
+  }, [selectedOrgId, orgId, isSuperAdmin, onOrgSelect]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();

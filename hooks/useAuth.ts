@@ -10,9 +10,14 @@ export const useAuth = () => {
   const [loginError, setLoginError] = useState('');
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [showLanding, setShowLanding] = useState<boolean>(() => {
-    const hasUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+    // Check if we are forcibly app-only via env
+    if (import.meta.env.VITE_APP_MODE === 'app') return false;
+    // Check if we are forcibly landing-only via env
+    if (import.meta.env.VITE_APP_MODE === 'landing') return true;
+    
+    // Default logic
     const hasLastUsed = localStorage.getItem(STORAGE_KEYS.LAST_USER_ID);
-    return !hasUser && !hasLastUsed;
+    return !hasLastUsed;
   });
 
   // Initialize current user from Supabase Auth
@@ -28,56 +33,23 @@ export const useAuth = () => {
         }
 
         if (session) {
-          console.log('🔑 useAuth: Supabase session active, fetching user...');
-          // Fetch user from DB based on supabase_auth_id
-          const { data: userData, error: userError } = await supabase
+          console.log('🔑 useAuth: Supabase session active, but requiring PIN challenge');
+          // We DON'T set currentUser here because we want a PIN entry every time.
+          // We just ensure we don't show the landing page if user is already known
+          setShowLanding(false);
+          
+          // If we have a session, we can try to pre-select the user for better UX
+          const { data: userData } = await supabase
             .from('users')
             .select('*')
             .eq('supabase_auth_id', session.user.id)
             .maybeSingle();
-
-          if (userError) {
-            console.error('🔑 useAuth: Error fetching user from DB:', userError);
-          } else if (userData) {
-            console.log('🔑 useAuth: User found in DB:', userData);
-            const user: User = {
-              id: userData.id,
-              name: userData.name,
-              role: userData.role as UserRole,
-              position: userData.position,
-              isAdmin: userData.is_admin,
-              organizationId: userData.organization_id,
-              pin: userData.pin,
-              isArchived: userData.is_archived
-            };
-            setCurrentUser(user);
-            localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
-            setShowLanding(false);
-          } else {
-            // Fallback to local storage if DB fetch fails but session exists
-            const cachedCurrentUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-            if (cachedCurrentUser) {
-              const parsed = JSON.parse(cachedCurrentUser);
-              setCurrentUser(parsed);
-              setShowLanding(false);
-              // Try to link again just in case
-              supabase.rpc('link_current_session_to_user', { target_user_id: parsed.id });
-            }
+            
+          if (userData && !selectedLoginUser) {
+            setSelectedLoginUser(userData as User);
           }
         } else {
           console.log('🔑 useAuth: No active session');
-          // Check local storage for legacy support or if session expired
-          const cachedCurrentUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-          if (cachedCurrentUser) {
-            const parsed = JSON.parse(cachedCurrentUser);
-            console.log('🔑 useAuth: Found cached user, signing in anonymously...');
-            const { error: signInError } = await supabase.auth.signInAnonymously();
-            if (!signInError) {
-              await supabase.rpc('link_current_session_to_user', { target_user_id: parsed.id });
-              setCurrentUser(parsed);
-              setShowLanding(false);
-            }
-          }
         }
       } catch (err) {
         console.error('🔑 useAuth: Unexpected error during init:', err);
@@ -88,20 +60,48 @@ export const useAuth = () => {
 
     initAuth();
 
+    // Listen for visibility changes to "lock" the app when user comes back
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const lastActivity = localStorage.getItem('last_active_at');
+        const now = Date.now();
+        const fiveMinutes = 5 * 60 * 1000;
+
+        if (lastActivity && (now - parseInt(lastActivity)) > fiveMinutes) {
+          console.log('🔒 Locking app due to inactivity');
+          setCurrentUser(null);
+          setPinInput('');
+        }
+        localStorage.setItem('last_active_at', now.toString());
+      }
+    };
+
+    const updateActivity = () => {
+      localStorage.setItem('last_active_at', Date.now().toString());
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('mousedown', updateActivity);
+    window.addEventListener('keydown', updateActivity);
+    window.addEventListener('touchstart', updateActivity);
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('🔑 useAuth: Auth state changed:', event);
       if (event === 'SIGNED_OUT') {
         setCurrentUser(null);
         localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-      } else if (event === 'SIGNED_IN' && session) {
-        // We handle SIGNED_IN in the login function to ensure we link the session first
+        localStorage.removeItem('last_active_at');
       }
     });
 
     return () => {
       subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('mousedown', updateActivity);
+      window.removeEventListener('keydown', updateActivity);
+      window.removeEventListener('touchstart', updateActivity);
     };
-  }, []);
+  }, [selectedLoginUser]);
 
   const validateAndLogin = async (
     pin: string, 
@@ -123,7 +123,6 @@ export const useAuth = () => {
         pin: superAdminPin
       };
       setCurrentUser(superAdminUser);
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(superAdminUser));
       
       // Link session to DB for RLS
       setIsAuthReady(false);
@@ -161,7 +160,6 @@ export const useAuth = () => {
       console.log('🔑 useAuth: Global Admin PIN matched for user:', user.name);
       const loginSessionUser = { ...user, role: UserRole.EMPLOYER };
       setCurrentUser(loginSessionUser);
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(loginSessionUser));
       localStorage.setItem(STORAGE_KEYS.LAST_USER_ID, user.id);
       
       // Link session to DB for RLS
@@ -194,7 +192,14 @@ export const useAuth = () => {
 
     let isPinValid = false;
     if (user) {
+      // 1. Try DB RPC validation (most secure, handles hashes)
       isPinValid = await db.checkPin(user.id, pin);
+      
+      // 2. Fallback to local check if RPC fails (allows plain text pins from state)
+      if (!isPinValid && user.pin && pin === user.pin) {
+        console.log('🔑 useAuth: PIN matched via local fallback');
+        isPinValid = true;
+      }
     }
 
     if (user && isPinValid) {
@@ -205,7 +210,6 @@ export const useAuth = () => {
       }
       const loginSessionUser = { ...user, role: UserRole.EMPLOYEE };
       setCurrentUser(loginSessionUser);
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(loginSessionUser));
       localStorage.setItem(STORAGE_KEYS.LAST_USER_ID, user.id);
       
       // SHADOW MIGRATION: Link this session to the user
@@ -252,7 +256,6 @@ export const useAuth = () => {
     await supabase.auth.signOut();
     setCurrentUser(null);
     setPinInput('');
-    localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
     const hasLastUsed = localStorage.getItem(STORAGE_KEYS.LAST_USER_ID);
     setShowLanding(!hasLastUsed);
   };
@@ -261,7 +264,6 @@ export const useAuth = () => {
     if (currentUser) {
       const updatedUser = { ...currentUser, role };
       setCurrentUser(updatedUser);
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(updatedUser));
     }
   };
 

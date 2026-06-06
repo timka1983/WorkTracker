@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PlanType, Plan, Organization, PlanLimits, User, Machine, Invoice, ReceivingOrganization } from '../../types';
 import { format } from 'date-fns';
+import { Eye, Trash2, Coins, FileText } from 'lucide-react';
 import { PLAN_LIMITS } from '../../constants';
 import { db } from '../../lib/supabase';
 import { Modal } from '../ui/Modal';
@@ -34,15 +35,18 @@ export const BillingView: React.FC<BillingViewProps> = ({
 }) => {
   const [isProcessingPayment, setIsProcessingPayment] = useState<string | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
-  const [selectedPlan, setSelectedPlan] = useState<PlanType | null>(null);
-  const [showPaymentOptions, setShowPaymentOptions] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<PlanType | null>(currentOrg?.plan || PlanType.FREE);
+  const [showPaymentOptions, setShowPaymentOptions] = useState(true);
   const [subscriptionTerm, setSubscriptionTerm] = useState(1);
+  const [extraMachines, setExtraMachines] = useState(0);
+  const [extraUsers, setExtraUsers] = useState(0);
   const [activeTab, setActiveTab] = useState<'billing' | 'invoices'>('billing');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [receivingOrgs, setReceivingOrgs] = useState<ReceivingOrganization[]>([]);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [currentInvoice, setCurrentInvoice] = useState<Invoice | null>(null);
-  const [paymentBlockSource, setPaymentBlockSource] = useState<'grid' | 'renew' | null>(null);
+  const [paymentBlockSource, setPaymentBlockSource] = useState<'grid' | 'renew' | null>('grid');
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const [modalConfig, setModalConfig] = useState<{
     isOpen: boolean;
     title: string;
@@ -55,9 +59,11 @@ export const BillingView: React.FC<BillingViewProps> = ({
       db.getSubscriptionHistory(currentOrg.id).then(history => {
         if (history) setPaymentHistory(history);
       }).catch(err => console.error('Error fetching subscription history:', err));
+      
       db.getInvoices(currentOrg.id).then(invs => {
         if (invs) setInvoices(invs);
       }).catch(err => console.error('Error fetching invoices:', err));
+      
       db.getReceivingOrganizations().then(orgs => {
         if (orgs) setReceivingOrgs(orgs);
       }).catch(err => console.error('Error fetching receiving organizations:', err));
@@ -69,24 +75,73 @@ export const BillingView: React.FC<BillingViewProps> = ({
     setIsProcessingPayment(planType);
     
     try {
+      const selectedPlanData = plans.find(p => p.type === planType);
+      const baseAmount = planType === PlanType.FREE ? 0 : (selectedPlanData?.price || 0) * subscriptionTerm;
+      const extraAmount = (extraMachines * (selectedPlanData?.machinePrice || 500) * subscriptionTerm) + (extraUsers * (selectedPlanData?.userPrice || 200) * subscriptionTerm);
+      const amount = baseAmount + extraAmount;
+      const date = new Date();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      
+      const defaultRecipient = receivingOrgs.find(o => o.isDefault) || receivingOrgs[0];
+      const invoiceSeq = invoices.length + 1;
+      const invoiceNumber = defaultRecipient 
+        ? `${defaultRecipient.abbreviation}-${invoiceSeq}-${month}/${year}`
+        : `INV-${invoiceSeq}-${month}/${year}`;
+        
+      const planName = planType === PlanType.PRO ? 'Профессиональный' : planType === PlanType.BUSINESS ? 'Бизнес' : 'Бесплатный';
+      const contractNum = currentOrg.contractNumber || 'Б/Н';
+      const contractDate = currentOrg.contractDate ? format(new Date(currentOrg.contractDate), 'dd.MM.yyyy') : format(new Date(currentOrg.createdAt || Date.now()), 'dd.MM.yyyy');
+      const paymentPurpose = `Онлайн оплата по Договору № ${contractNum} от ${contractDate} за продление по тарифу ${planName}`;
+
+      const invoiceId = typeof crypto !== 'undefined' && crypto.randomUUID 
+        ? crypto.randomUUID() 
+        : `inv_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+      const newInvoice: Invoice = {
+        id: invoiceId,
+        organizationId: currentOrg.id,
+        contractNumber: invoiceNumber,
+        date: format(date, 'dd.MM.yyyy'),
+        planType: planType,
+        amount: amount,
+        termMonths: subscriptionTerm,
+        status: 'pending',
+        paymentMethod: 'cash', // Online payment is treated as cash/instant
+        paymentPurpose: paymentPurpose
+      };
+
+      // Save invoice as pending before redirecting
+      await db.saveInvoice(newInvoice);
+
       const response = await fetch('/api/payments/create-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           orgId: currentOrg.id,
+          invoiceId: invoiceId,
           planType: planType,
           termMonths: subscriptionTerm,
-          amount: (planType === PlanType.PRO ? 1500 : 5000) * subscriptionTerm
+          amount: amount,
+          extraMachines: extraMachines,
+          extraUsers: extraUsers
         })
       });
 
-      if (!response.ok) throw new Error('Failed to create payment session');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server responded with ${response.status}`);
+      }
       
       const { url } = await response.json();
       window.location.href = url;
     } catch (error: any) {
       console.error('Payment error:', error);
-      alert('Ошибка при создании платежа: ' + error.message);
+      let userMessage = error.message;
+      if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
+        userMessage = 'Не удалось связаться с сервером. Проверьте интернет-соединение или попробуйте позже. Если вы используете AdBlock, попробуйте отключить его для этого сайта.';
+      }
+      alert('Ошибка при создании платежа: ' + userMessage);
     } finally {
       setIsProcessingPayment(null);
     }
@@ -95,28 +150,64 @@ export const BillingView: React.FC<BillingViewProps> = ({
   const handleInvoiceGeneration = async (planType: PlanType, formatType?: 'pdf' | 'excel' | 'word') => {
     if (!currentOrg) return;
     
-    const amount = (planType === PlanType.PRO ? 1500 : 5000) * subscriptionTerm;
+    setGenerationError(null);
+    const selectedPlanData = plans.find(p => p.type === planType);
+    const baseAmount = planType === PlanType.FREE ? 0 : (selectedPlanData?.price || 0) * subscriptionTerm;
+    const extraAmount = (extraMachines * (selectedPlanData?.machinePrice || 500) * subscriptionTerm) + (extraUsers * (selectedPlanData?.userPrice || 200) * subscriptionTerm);
+    const amount = baseAmount + extraAmount;
     const date = new Date();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const year = date.getFullYear();
-    const invoiceNumber = `${invoices.length + 1}/${month}/${year}`;
     
+    // Find default receiving organization
+    const defaultRecipient = receivingOrgs.find(o => o.isDefault) || receivingOrgs[0];
+    if (!defaultRecipient) {
+      setGenerationError('В системе не настроены реквизиты получателя платежей. Пожалуйста, обратитесь в поддержку.');
+      return;
+    }
+
+    // Invoice numbering: [Abbreviation]-[sequential number]-[month]/[year]
+    const invoiceSeq = invoices.length + 1;
+    const invoiceNumber = `${defaultRecipient.abbreviation}-${invoiceSeq}-${month}/${year}`;
+    
+    // Payment purpose: Оплата по Договору № [номер договора] от [дата] за продление по тарифу [Тариф]
+    const planName = planType === PlanType.PRO ? 'Профессиональный' : planType === PlanType.BUSINESS ? 'Бизнес' : 'Бесплатный';
+    const contractNum = currentOrg.contractNumber || 'Б/Н';
+    const contractDate = currentOrg.contractDate ? format(new Date(currentOrg.contractDate), 'dd.MM.yyyy') : format(new Date(currentOrg.createdAt || Date.now()), 'dd.MM.yyyy');
+    const paymentPurpose = `Оплата по Договору № ${contractNum} от ${contractDate} за продление по тарифу ${planName}`;
+
+    // Fallback for crypto.randomUUID
+    const invoiceId = typeof crypto !== 'undefined' && crypto.randomUUID 
+      ? crypto.randomUUID() 
+      : `inv_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
     // Generate a temporary invoice object for preview/saving
     const newInvoice: Invoice = {
-      id: crypto.randomUUID(),
+      id: invoiceId,
       organizationId: currentOrg.id,
       contractNumber: invoiceNumber,
       date: format(date, 'dd.MM.yyyy'),
       planType: planType,
       amount: amount,
       termMonths: subscriptionTerm,
-      status: 'pending'
+      extraMachines: extraMachines,
+      extraUsers: extraUsers,
+      status: 'pending',
+      paymentMethod: 'bank',
+      paymentPurpose: paymentPurpose
     };
 
     try {
       // Save to database
       const { error: saveError } = await db.saveInvoice(newInvoice);
-      if (saveError) throw saveError;
+      if (saveError) {
+        console.error('Save invoice error:', saveError);
+        if (typeof saveError === 'string') {
+          setGenerationError(saveError);
+        } else if (saveError.message) {
+          setGenerationError(saveError.message);
+        }
+      }
 
       // Refresh invoices list
       const updatedInvoices = await db.getInvoices(currentOrg.id);
@@ -124,11 +215,11 @@ export const BillingView: React.FC<BillingViewProps> = ({
 
       if (formatType) {
         if (formatType === 'pdf') {
-          generateInvoicePDF(currentOrg, planType, subscriptionTerm, amount);
+          await generateInvoicePDF('printable-invoice', newInvoice.contractNumber);
         } else if (formatType === 'excel') {
-          generateInvoiceExcel(currentOrg, planType, subscriptionTerm, amount);
+          generateInvoiceExcel(currentOrg, planType, subscriptionTerm, amount, defaultRecipient, newInvoice);
         } else if (formatType === 'word') {
-          await generateInvoiceWord(currentOrg, planType, subscriptionTerm, amount);
+          await generateInvoiceWord(currentOrg, planType, subscriptionTerm, amount, defaultRecipient, newInvoice);
         }
         setShowPaymentOptions(false);
         setPaymentBlockSource(null);
@@ -137,9 +228,9 @@ export const BillingView: React.FC<BillingViewProps> = ({
         setCurrentInvoice(newInvoice);
         setShowInvoiceModal(true);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Invoice generation error:', error);
-      alert('Ошибка при формировании счета');
+      setGenerationError(error?.message || 'Произошла непредвиденная ошибка при формировании счета');
     }
   };
 
@@ -147,6 +238,30 @@ export const BillingView: React.FC<BillingViewProps> = ({
     setSelectedPlan(planType);
     setShowPaymentOptions(true);
     setPaymentBlockSource(source);
+  };
+
+  const handleDeleteInvoice = async (id: string) => {
+    setModalConfig({
+      isOpen: true,
+      title: 'Удаление счета',
+      message: 'Вы уверены, что хотите удалить этот счет?',
+      onConfirm: async () => {
+        try {
+          const { error } = await db.deleteInvoice(id);
+          if (error) throw error;
+          setInvoices(prev => prev.filter(inv => inv.id !== id));
+          setModalConfig(null);
+        } catch (error) {
+          console.error('Error deleting invoice:', error);
+          alert('Ошибка при удалении счета');
+        }
+      }
+    });
+  };
+
+  const handleViewInvoice = (invoice: Invoice) => {
+    setCurrentInvoice(invoice);
+    setShowInvoiceModal(true);
   };
 
   return (
@@ -291,8 +406,11 @@ export const BillingView: React.FC<BillingViewProps> = ({
                 <tr className="border-b border-slate-100 dark:border-slate-800">
                   <th className="pb-4 text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Номер</th>
                   <th className="pb-4 text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Дата</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Вид оплаты</th>
+                  <th className="pb-4 text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Тариф / Срок</th>
                   <th className="pb-4 text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Сумма</th>
                   <th className="pb-4 text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Статус</th>
+                  <th className="pb-4 text-right text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest">Действия</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
@@ -300,8 +418,55 @@ export const BillingView: React.FC<BillingViewProps> = ({
                   <tr key={inv.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                     <td className="py-4 text-xs font-bold text-slate-600 dark:text-slate-400">{inv.contractNumber}</td>
                     <td className="py-4 text-xs font-bold text-slate-600 dark:text-slate-400">{inv.date}</td>
+                    <td className="py-4">
+                      <div className="flex items-center gap-2">
+                        {inv.paymentMethod === 'cash' ? (
+                          <div className="flex items-center gap-1.5 text-amber-600 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-lg border border-amber-100 dark:border-amber-800">
+                            <Coins className="w-3 h-3" />
+                            <span className="text-[9px] font-black uppercase">Наличные</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-blue-600 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded-lg border border-blue-100 dark:border-blue-800">
+                            <FileText className="w-3 h-3" />
+                            <span className="text-[9px] font-black uppercase">Безнал</span>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-4">
+                      <div className="text-xs font-bold text-slate-700 dark:text-slate-200">{inv.planType}</div>
+                      <div className="text-[10px] text-slate-400">{inv.termMonths} мес.</div>
+                    </td>
                     <td className="py-4 text-xs font-black text-slate-900 dark:text-slate-100">{inv.amount} руб.</td>
-                    <td className="py-4 text-xs font-bold text-slate-600 dark:text-slate-400">{inv.status}</td>
+                    <td className="py-4">
+                      <span className={`text-[10px] font-black px-2 py-1 rounded-lg uppercase tracking-widest border ${
+                        inv.status === 'paid' 
+                          ? 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-800' 
+                          : inv.status === 'cancelled'
+                          ? 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 border-rose-100 dark:border-rose-800'
+                          : 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border-amber-100 dark:border-amber-800'
+                      }`}>
+                        {inv.status === 'paid' ? 'Оплачен' : inv.status === 'cancelled' ? 'Отменен' : 'Ожидает'}
+                      </span>
+                    </td>
+                    <td className="py-4 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => handleViewInvoice(inv)}
+                          className="p-2 text-slate-400 hover:text-blue-600 transition-colors rounded-lg hover:bg-blue-50"
+                          title="Просмотреть"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteInvoice(inv.id)}
+                          className="p-2 text-slate-400 hover:text-rose-600 transition-colors rounded-lg hover:bg-rose-50"
+                          title="Удалить"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -325,6 +490,10 @@ export const BillingView: React.FC<BillingViewProps> = ({
                   <p className="text-[10px] font-black text-slate-400 dark:text-slate-500 dark:text-slate-400 uppercase tracking-widest mt-1">
                     {planType === PlanType.FREE ? 'Для малого бизнеса' : planType === PlanType.PRO ? 'Для растущих команд' : 'Для крупных предприятий'}
                   </p>
+                  <div className="mt-2 flex items-baseline gap-1">
+                    <span className="text-lg font-black text-blue-600 dark:text-blue-400">{(dynamicPlan?.price || 0).toLocaleString()}</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">₽ / мес</span>
+                  </div>
                 </div>
                 {isCurrent && <span className="text-[8px] font-black bg-blue-600 text-white px-2 py-1 rounded-full uppercase">Текущий</span>}
                 {!isCurrent && isSelected && <span className="text-[8px] font-black bg-green-600 text-white px-2 py-1 rounded-full uppercase">Выбран</span>}
@@ -358,6 +527,9 @@ export const BillingView: React.FC<BillingViewProps> = ({
                     { label: 'Аналитика', enabled: limits.features.advancedAnalytics },
                     { label: 'Зарплата', enabled: limits.features.payroll },
                     { label: 'Мониторинг смен', enabled: limits.features.shiftMonitoring },
+                    { label: 'Филиалы', enabled: limits.features.multipleBranches },
+                    { label: 'Журнал аудита', enabled: limits.features.auditLog },
+                    { label: 'Выплаты', enabled: limits.features.payments },
                     { label: 'Облачная синхронизация', enabled: true },
                     { label: 'Техподдержка 24/7', enabled: planType !== PlanType.FREE },
                   ].map((feat, idx) => (
@@ -435,6 +607,23 @@ export const BillingView: React.FC<BillingViewProps> = ({
         </section>
       )}
 
+      {generationError && (
+        <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-2xl animate-fadeIn">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-red-600 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <p className="text-xs font-black text-red-600 uppercase tracking-widest mb-1">Ошибка</p>
+              <p className="text-xs text-red-500 font-bold">{generationError}</p>
+            </div>
+            <button onClick={() => setGenerationError(null)} className="ml-auto text-red-400 hover:text-red-600">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+        </div>
+      )}
+
       {showInvoiceModal && currentInvoice && (
         <Modal
           isOpen={showInvoiceModal}
@@ -450,43 +639,12 @@ export const BillingView: React.FC<BillingViewProps> = ({
                   org={currentOrg!} 
                   recipient={receivingOrgs.find(o => o.isDefault) || receivingOrgs[0] || {
                     id: 'default',
-                    name: 'ООО "Ворк Трекер"',
-                    abbreviation: 'ВТ',
-                    requisites: { inn: '1234567890', kpp: '123456789', address: 'г. Москва', bankDetails: 'Р/С 123...' },
-                    isDefault: true
+                    name: 'Организация не выбрана',
+                    abbreviation: 'Н/Д',
+                    requisites: { inn: '', kpp: '', address: '', bankName: '', bik: '', corrAccount: '', settlementAccount: '', vatRate: 'Без НДС' },
+                    isDefault: false
                   }} 
                 />
-                {/* Visual version for the modal since InvoiceTemplate is hidden print:block */}
-                <div className="text-slate-900 dark:text-slate-100">
-                  <h2 className="text-xl font-black mb-4 uppercase tracking-tight">Счёт №{currentInvoice.contractNumber}</h2>
-                  <div className="grid grid-cols-2 gap-8 mb-8 text-xs">
-                    <div>
-                      <h4 className="font-black text-slate-400 uppercase mb-1">Поставщик:</h4>
-                      <p className="font-bold">{(receivingOrgs.find(o => o.isDefault) || receivingOrgs[0])?.name || 'ООО "Ворк Трекер"'}</p>
-                    </div>
-                    <div>
-                      <h4 className="font-black text-slate-400 uppercase mb-1">Плательщик:</h4>
-                      <p className="font-bold">{currentOrg?.clientRequisites?.name || currentOrg?.name}</p>
-                    </div>
-                  </div>
-                  <table className="w-full text-xs mb-8 border-collapse">
-                    <thead>
-                      <tr className="border-b-2 border-slate-200 dark:border-slate-700 text-left">
-                        <th className="py-2 font-black uppercase">Наименование</th>
-                        <th className="py-2 font-black uppercase text-right">Сумма</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr className="border-b border-slate-100 dark:border-slate-800">
-                        <td className="py-4 font-bold">Тариф {currentInvoice.planType} ({currentInvoice.termMonths} мес.)</td>
-                        <td className="py-4 font-black text-right">{currentInvoice.amount} руб.</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div className="text-right">
-                    <p className="text-2xl font-black text-blue-600">{currentInvoice.amount} руб.</p>
-                  </div>
-                </div>
               </div>
             </div>
             
@@ -530,6 +688,45 @@ export const BillingView: React.FC<BillingViewProps> = ({
         <h3 className="font-black text-slate-900 dark:text-slate-100 mb-6 uppercase text-xs tracking-widest underline decoration-blue-500 decoration-4 underline-offset-8">Параметры оплаты</h3>
         
         <div className="space-y-8">
+          {/* Extra Units Purchase Section */}
+          {selectedPlan && (
+            <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border border-slate-100 dark:border-slate-800">
+              <h4 className="font-black text-slate-900 dark:text-slate-100 mb-6 uppercase text-[10px] tracking-widest">Дополнительные единицы</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">Оборудование: {extraMachines}</label>
+                    <span className="text-lg font-black text-blue-600 dark:text-blue-400">{extraMachines} шт.</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="20" 
+                    step="1"
+                    value={extraMachines} 
+                    onChange={(e) => setExtraMachines(parseInt(e.target.value))}
+                    className="w-full h-2 bg-slate-300 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-600 border border-slate-400 dark:border-transparent transition-all hover:bg-slate-400"
+                  />
+                </div>
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <label className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">Сотрудники: {extraUsers}</label>
+                    <span className="text-lg font-black text-blue-600 dark:text-blue-400">{extraUsers} чел.</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="50" 
+                    step="1"
+                    value={extraUsers} 
+                    onChange={(e) => setExtraUsers(parseInt(e.target.value))}
+                    className="w-full h-2 bg-slate-300 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-600 border border-slate-400 dark:border-transparent transition-all hover:bg-slate-400"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           <div>
             <div className="flex justify-between items-center mb-4">
               <label className="text-xs font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Срок подписки: {subscriptionTerm} {subscriptionTerm === 1 ? 'месяц' : subscriptionTerm < 5 ? 'месяца' : 'месяцев'}</label>
@@ -542,7 +739,7 @@ export const BillingView: React.FC<BillingViewProps> = ({
               step="1"
               value={subscriptionTerm} 
               onChange={(e) => setSubscriptionTerm(parseInt(e.target.value))}
-              className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              className="w-full h-2 bg-slate-300 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-600 border border-slate-400 dark:border-transparent transition-all hover:bg-slate-400"
             />
             <div className="flex justify-between mt-4 px-1 gap-2">
               {[1, 3, 6, 12].map(m => (
@@ -565,7 +762,14 @@ export const BillingView: React.FC<BillingViewProps> = ({
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div>
                 <p className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Итого к оплате за {selectedPlan}</p>
-                <p className="text-3xl font-black text-slate-900 dark:text-slate-100">{(selectedPlan === PlanType.PRO ? 1500 : 5000) * subscriptionTerm} руб.</p>
+                <p className="text-3xl font-black text-slate-900 dark:text-slate-100">
+                  {(() => {
+                    const planData = plans.find(p => p.type === selectedPlan);
+                    const base = selectedPlan === PlanType.FREE ? 0 : (planData?.price || 0) * subscriptionTerm;
+                    const extra = (extraMachines * (planData?.machinePrice || 500) * subscriptionTerm) + (extraUsers * (planData?.userPrice || 200) * subscriptionTerm);
+                    return (base + extra).toLocaleString();
+                  })()} руб.
+                </p>
               </div>
               
               <div className="flex flex-wrap gap-3">

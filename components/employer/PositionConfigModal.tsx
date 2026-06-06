@@ -81,7 +81,7 @@ export const PositionConfigModal: React.FC<PositionConfigModalProps> = ({
                       }}
                       disabled={isBlocked}
                     />
-                    <div className={`w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white dark:after:bg-slate-200 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 shadow-md dark:shadow-slate-900/20 ${isBlocked ? 'bg-slate-300 dark:bg-slate-600' : ''}`}></div>
+                    <div className={`w-11 h-6 bg-slate-400 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white dark:after:bg-slate-200 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 shadow-md border border-slate-500 dark:border-transparent ${isBlocked ? 'bg-slate-300 dark:bg-slate-600' : ''}`}></div>
                   </div>
                 </label>
               );

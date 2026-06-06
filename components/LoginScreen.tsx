@@ -53,12 +53,6 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 p-8 w-full max-w-md relative overflow-hidden">
-        <button 
-          onClick={() => setShowLanding(true)}
-          className="absolute top-4 left-4 text-slate-400 hover:text-slate-900 dark:text-slate-50 transition-colors"
-        >
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-        </button>
         <div className="absolute top-0 right-0 p-3">
           <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{appVersion}</span>
         </div>

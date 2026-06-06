@@ -9,13 +9,15 @@ interface ShiftMonitorProps {
   organization: Organization | null;
   userPosition: PositionConfig | null;
   onForceClose: (logId: string, endTime: string) => void;
+  getNow?: () => Date;
 }
 
 export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
   activeShift,
   organization,
   userPosition,
-  onForceClose
+  onForceClose,
+  getNow
 }) => {
   const [status, setStatus] = useState<'normal' | 'warning' | 'critical' | 'expired'>('normal');
   const [message, setMessage] = useState<string | null>(null);
@@ -40,7 +42,7 @@ export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
     }
 
     const checkShift = () => {
-      const now = new Date();
+      const now = getNow ? getNow() : new Date();
       const startTime = parseISO(activeShift.checkIn!);
       const elapsed = differenceInMinutes(now, startTime);
       const remaining = maxDuration - elapsed;
@@ -84,7 +86,7 @@ export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
           if (Notification.permission === 'granted') {
             new Notification(autoShift?.enabled === true ? 'Внимание! Смена будет закрыта' : 'Внимание! Смена превысила лимит', {
               body: 'Вы превысили максимальное время смены.',
-              icon: '/icon-192.png'
+              icon: '/icons/icon-192.png'
             });
           }
           // Here we would check location logic
@@ -105,7 +107,7 @@ export const ShiftMonitor: React.FC<ShiftMonitorProps> = ({
            if (Notification.permission === 'granted') {
             new Notification('Вы забыли закрыть смену?', {
               body: 'Прошло ' + firstInterval + ' минут после окончания смены.',
-              icon: '/icon-192.png'
+              icon: '/icons/icon-192.png'
             });
           }
           if (autoShift?.enabled === true) {

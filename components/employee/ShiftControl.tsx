@@ -19,6 +19,7 @@ interface ShiftControlProps {
   getMachineName: (id?: string) => string;
   isAnyShiftActiveInLogs: boolean;
   isPaid?: boolean;
+  currentOrg?: any;
 }
 
 export const ShiftControl = memo<ShiftControlProps>(({
@@ -37,7 +38,8 @@ export const ShiftControl = memo<ShiftControlProps>(({
   isProcessingAction,
   getMachineName,
   isAnyShiftActiveInLogs,
-  isPaid
+  isPaid,
+  currentOrg
 }) => {
   const renderSlot = (slot: number) => {
     const active = activeShifts[slot];
@@ -115,7 +117,7 @@ export const ShiftControl = memo<ShiftControlProps>(({
               </div>
             )}
             
-            {perms.canUseNightShift && (
+            {perms.canUseNightShift && !currentOrg?.autoNightShift && (
               <div className="flex items-center justify-between px-2 py-1">
                  <span className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1 ${isAnyNightShiftActive ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500 dark:text-slate-400'}`}>
                     <svg className={`w-3 h-3 ${isNightModeGlobal ? 'text-blue-500 dark:text-blue-400' : 'text-slate-300 dark:text-slate-600 dark:text-slate-300'}`} fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>
@@ -143,7 +145,7 @@ export const ShiftControl = memo<ShiftControlProps>(({
               }} 
               className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm shadow-xl dark:shadow-slate-900/20 shadow-blue-100 dark:shadow-blue-900/20 transition-all active:scale-95 uppercase disabled:bg-slate-300 dark:disabled:bg-slate-800 disabled:shadow-none disabled:cursor-not-allowed"
             >
-              {isProcessingAction ? 'Загрузка...' : `Начать ${isNightModeGlobal && perms.canUseNightShift ? 'ночную' : ''} смену`}
+              {isProcessingAction ? 'Загрузка...' : `Начать ${(!currentOrg?.autoNightShift && isNightModeGlobal && perms.canUseNightShift) ? 'ночную' : ''} смену`}
             </button>
           </div>
         )}

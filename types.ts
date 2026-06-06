@@ -38,6 +38,8 @@ export interface Plan {
   name: string;
   limits: PlanLimits;
   price: number;
+  machinePrice: number;
+  userPrice: number;
 }
 
 export interface PromoCode {
@@ -80,6 +82,16 @@ export interface TelegramSettings {
   lastCleanupAlertSentAt?: string;
 }
 
+export interface MaxSettings {
+  botToken: string;
+  chatId: string;
+  enabled: boolean;
+  notifyOnShiftStart?: boolean;
+  notifyOnShiftEnd?: boolean;
+  notifyOnLimitExceeded?: boolean;
+  lastAlertSentAt?: string;
+}
+
 export interface AutoShiftCompletionSettings {
   enabled: boolean;
   firstAlertMinutes: number;
@@ -96,6 +108,8 @@ export interface Organization {
   status: 'active' | 'trial' | 'expired';
   expiryDate?: string;
   inviteToken?: string;
+  theme?: 'default' | 'paper' | 'forest' | 'cartoon';
+  applyThemeToEmployees?: boolean;
   notificationSettings?: {
     onShiftStart: boolean;
     onShiftEnd: boolean;
@@ -103,11 +117,20 @@ export interface Organization {
   };
   locationSettings?: LocationSettings;
   telegramSettings?: TelegramSettings;
+  maxSettings?: MaxSettings;
   autoShiftCompletion?: AutoShiftCompletionSettings;
   maxShiftDuration?: number; // Global max shift duration in minutes (default 720 = 12h)
   roundShiftMinutes?: boolean; // 15-minute rounding rule
   nightShiftBonus?: number; // Global night shift bonus in minutes
+  autoNightShift?: boolean; // Automatically detect night shifts
+  nightShiftStart?: string; // Time string like "22:00"
+  nightShiftEnd?: string; // Time string like "06:00"
+  shiftStart1?: string; // Time string like "08:00"
+  shiftStart2?: string; // Time string like "16:00"
+  shiftStart3?: string; // Time string like "00:00"
   debugEnabled?: boolean; // Enable debug info for this organization
+  useSupabaseProxy?: boolean; // Enable proxy for Supabase queries
+  useTelegramProxy?: boolean; // Enable proxy for Telegram API
   invoiceRequested?: boolean; // Track invoice request status
   contractNumber?: string;
   contractDate?: string;
@@ -116,8 +139,14 @@ export interface Organization {
     inn: string;
     kpp: string;
     address: string;
-    bankDetails: string;
+    bankName?: string;
+    bik?: string;
+    corrAccount?: string;
+    settlementAccount?: string;
   };
+  extraMachines?: number;
+  extraUsers?: number;
+  onboardingCompleted?: boolean;
   createdAt?: string; // ISO timestamp
 }
 
@@ -129,7 +158,11 @@ export interface ReceivingOrganization {
     inn: string;
     kpp: string;
     address: string;
-    bankDetails: string;
+    bankName?: string;
+    bik?: string;
+    corrAccount?: string;
+    settlementAccount?: string;
+    vatRate?: string;
   };
   isDefault: boolean;
 }
@@ -142,7 +175,11 @@ export interface Invoice {
   planType: PlanType;
   amount: number;
   termMonths: number;
+  extraMachines?: number;
+  extraUsers?: number;
   status: 'pending' | 'paid' | 'cancelled';
+  paymentMethod: 'cash' | 'bank';
+  paymentPurpose?: string;
 }
 
 export const FIXED_POSITION_TURNER = 'Токарь';
@@ -205,7 +242,9 @@ export interface User {
   email?: string; // Optional email for Auth
   pinHash?: string; // Hashed pin
   birthday?: string; // ISO Date YYYY-MM-DD
+  phone?: string; // Phone number
   requirePhoto?: boolean; // Mandatory photo capture
+  isChatAdmin?: boolean; // Chat Administrator rights
   isAdmin?: boolean; // Admin privileges
   forcePinChange?: boolean; // Mandatory PIN change on next login
   organizationId?: string;
@@ -224,6 +263,7 @@ export interface User {
   archivedAt?: string;
   archiveReason?: string;
   createdAt?: string;
+  lastChatRead?: string;
 }
 
 export interface WorkLog {
@@ -281,6 +321,21 @@ export interface PayrollSnapshot {
   rateType: 'hourly' | 'fixed' | 'shift' | 'piecework';
   calculatedAt: string; // ISO timestamp
   details: any; // Store the full calculation details as JSON
+}
+
+export interface ChatMessage {
+  id: string;
+  organizationId: string;
+  senderId: string;
+  senderName: string;
+  recipientId?: string; // For private replies from admin
+  recipientName?: string; // For private replies from admin
+  message: string;
+  createdAt: string;
+  isDeleted?: boolean;
+  deletedBy?: string;
+  deletedAt?: string;
+  toAdminOnly?: boolean;
 }
 
 export interface SupportMessage {

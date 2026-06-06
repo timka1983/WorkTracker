@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import bcrypt from 'bcryptjs';
-import { Organization, User, Invoice, ReceivingOrganization } from '../types';
+import { Organization, User, Invoice, ReceivingOrganization, ChatMessage } from '../types';
 import { STORAGE_KEYS } from '../constants';
 
 const getEnv = (name: string): string => {
@@ -24,9 +24,26 @@ const getEnv = (name: string): string => {
   return '';
 };
 
-const SUPABASE_URL = getEnv('VITE_SUPABASE_URL').trim() || 'https://placeholder-project.supabase.co';
+const RAW_SUPABASE_URL = getEnv('VITE_SUPABASE_URL').trim() || 'https://placeholder-project.supabase.co';
 const SUPABASE_ANON_KEY = getEnv('VITE_SUPABASE_ANON_KEY').trim() || getEnv('VITE_SUPABASE_PUBLISHABLE_KEY').trim() || 'placeholder-anon-key';
-const APP_SECRET = 'work-tracker-pro-secret-2026';
+
+// Use proxy in browser to bypass potential blocking
+let SUPABASE_URL = RAW_SUPABASE_URL;
+if (typeof window !== 'undefined') {
+  // In the browser, we can use our own server as a proxy for Supabase
+  // This helps when the direct supabase.co domain is blocked
+  // We check local storage first for settings
+  const useProxySetting = localStorage.getItem('use_supabase_proxy');
+  
+  // Default to false for proxy unless specifically enabled
+  if (useProxySetting === 'true') {
+    SUPABASE_URL = window.location.origin + '/api/supabase-proxy';
+    console.log('🔄 Using Supabase Proxy:', SUPABASE_URL);
+  } else {
+    console.log('🌐 Using Direct Supabase connection:', SUPABASE_URL);
+  }
+}
+const APP_SECRET = getEnv('VITE_APP_SECRET') || 'change-me-in-env';
 
 // Debug logging for configuration
 if (typeof window !== 'undefined') {
@@ -96,9 +113,12 @@ export const supabase = createClient(finalUrl, SUPABASE_ANON_KEY, {
     detectSessionInUrl: true
   },
   global: {
-    fetch: (...args) => {
-      return fetch(...args);
-    }
+    fetch: (...args) => fetch(...args).catch(err => {
+      if (err.name === 'TypeError' && (err.message === 'Failed to fetch' || err.message.includes('NetworkError'))) {
+        console.warn('🌐 Supabase Network Error: Failed to fetch. Check your connection or ad-blocker.');
+      }
+      throw err;
+    })
   }
 });
 
@@ -168,6 +188,12 @@ export const db = {
     try {
       const { error } = await supabase.from('organizations').select('id').limit(1);
       if (error) {
+        if (error.message === 'Failed to fetch' || error.message.includes('NetworkError')) {
+          return { 
+            isConnected: false, 
+            error: 'Ошибка сети: Не удалось подключиться к Supabase. Проверьте интернет или отключите блокировщик рекламы.' 
+          };
+        }
         return { 
           isConnected: false, 
           error: `Ошибка Supabase: ${error.message} (Код: ${error.code})` 
@@ -175,6 +201,13 @@ export const db = {
       }
       return { isConnected: true, error: null };
     } catch (e: any) {
+      const msg = e.message || '';
+      if (msg.includes('fetch') || msg.includes('NetworkError') || e.name === 'TypeError') {
+        return { 
+          isConnected: false, 
+          error: 'Ошибка сети: Не удалось подключиться к Supabase. Проверьте интернет или отключите блокировщик рекламы.' 
+        };
+      }
       return { 
         isConnected: false, 
         error: `Ошибка сети: ${e.message || 'Не удалось подключиться к Supabase'}` 
@@ -214,10 +247,16 @@ export const db = {
         { table: 'users', column: 'telegram_settings', type: 'JSONB' },
         { table: 'users', column: 'supabase_auth_id', type: 'UUID' },
         { table: 'organizations', column: 'telegram_settings', type: 'JSONB' },
+        { table: 'organizations', column: 'max_settings', type: 'JSONB' },
         { table: 'organizations', column: 'night_shift_bonus', type: 'INTEGER DEFAULT 20' },
         { table: 'organizations', column: 'is_active', type: 'BOOLEAN DEFAULT TRUE' },
         { table: 'organizations', column: 'plan', type: 'TEXT DEFAULT \'FREE\'' },
-        { table: 'organizations', column: 'invite_token', type: 'TEXT' }
+        { table: 'organizations', column: 'invite_token', type: 'TEXT' },
+        { table: 'organizations', column: 'use_supabase_proxy', type: 'BOOLEAN DEFAULT FALSE' },
+        { table: 'organizations', column: 'use_telegram_proxy', type: 'BOOLEAN DEFAULT FALSE' },
+        { table: 'users', column: 'is_chat_admin', type: 'BOOLEAN DEFAULT FALSE' },
+        { table: 'chat_messages', column: 'recipient_id', type: 'TEXT' },
+        { table: 'chat_messages', column: 'recipient_name', type: 'TEXT' }
       ];
 
       let anyError = false;
@@ -251,6 +290,10 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS night_shift_bonus INTEGER DEF
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'FREE';
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS invite_token TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS use_supabase_proxy BOOLEAN DEFAULT FALSE;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS use_telegram_proxy BOOLEAN DEFAULT FALSE;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS recipient_id TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS recipient_name TEXT;
 
 -- 2. Создание супер-админа
 INSERT INTO users (id, name, role, position, pin, is_admin, organization_id)
@@ -365,10 +408,27 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       notificationSettings: data.notification_settings,
       locationSettings: data.location_settings || data.notification_settings?.locationSettings,
       telegramSettings: data.telegram_settings || data.notification_settings?.telegramSettings,
+      maxSettings: data.max_settings || data.notification_settings?.maxSettings,
       autoShiftCompletion: data.auto_shift_completion || data.notification_settings?.autoShiftCompletion,
       maxShiftDuration: data.max_shift_duration || data.notification_settings?.maxShiftDuration || 14 * 60,
       roundShiftMinutes: data.round_shift_minutes || data.notification_settings?.roundShiftMinutes || 15,
       nightShiftBonus: data.night_shift_bonus || data.notification_settings?.nightShiftBonus || 0,
+      autoNightShift: data.auto_night_shift || data.notification_settings?.autoNightShift || false,
+      nightShiftStart: data.night_shift_start || data.notification_settings?.nightShiftStart || '22:00',
+      nightShiftEnd: data.night_shift_end || data.notification_settings?.nightShiftEnd || '06:00',
+      shiftStart1: data.notification_settings?.shiftStart1,
+      shiftStart2: data.notification_settings?.shiftStart2,
+      shiftStart3: data.notification_settings?.shiftStart3,
+      theme: data.theme || data.notification_settings?.theme || 'default',
+      applyThemeToEmployees: data.apply_theme_to_employees || data.notification_settings?.applyThemeToEmployees,
+      contractNumber: data.contract_number,
+      contractDate: data.contract_date,
+      clientRequisites: data.client_requisites,
+      extraMachines: data.extra_machines || 0,
+      extraUsers: data.extra_users || 0,
+      onboardingCompleted: data.onboarding_completed || data.notification_settings?.onboardingCompleted,
+      useSupabaseProxy: data.use_supabase_proxy,
+      useTelegramProxy: data.use_telegram_proxy,
       createdAt: data.created_at
     };
   },
@@ -580,14 +640,14 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
     }
   },
   uploadPhoto: async (base64Data: string, orgId: string, userId: string): Promise<string | null> => {
-    if (!isConfigured() || !base64Data.startsWith('data:image')) return base64Data;
+    if (!isConfigured() || !base64Data.startsWith('data:image')) return null;
     
     try {
       const base64Parts = base64Data.split(',');
-      if (base64Parts.length !== 2) return base64Data;
+      if (base64Parts.length !== 2) return null;
       
       const mimeMatch = base64Parts[0].match(/:(.*?);/);
-      if (!mimeMatch) return base64Data;
+      if (!mimeMatch) return null;
       
       const mimeType = mimeMatch[1];
       const byteCharacters = atob(base64Parts[1]);
@@ -616,7 +676,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
         
       if (error) {
         console.error('Error uploading photo:', error);
-        return base64Data; // Fallback to base64
+        return null; // Don't use base64 fallback to prevent QuotaExceededError in localStorage
       }
       
       const { data: publicUrlData } = supabase.storage
@@ -626,7 +686,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       return publicUrlData.publicUrl;
     } catch (e) {
       console.error('Exception uploading photo:', e);
-      return base64Data; // Fallback
+      return null; // Fallback to null to prevent QuotaExceededError in localStorage
     }
   },
   batchUpsertLogs: async (logs: any[], orgId: string) => {
@@ -708,7 +768,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       // We'll try to select only known columns to avoid errors if new ones are missing
       const baseColumns = 'id, name, role, department, position, pin, organization_id, branch_id, is_archived, archived_at, archive_reason';
       // We'll try to add optional columns if they exist
-      const optionalColumns = 'email, birthday, require_photo, is_admin, force_pin_change, push_token, planned_shifts, payroll, telegram_chat_id, telegram_settings';
+      const optionalColumns = 'email, birthday, require_photo, is_admin, is_chat_admin, force_pin_change, push_token, planned_shifts, payroll, telegram_chat_id, telegram_settings, last_chat_read';
       
       let query = supabase.from('users').select(`${baseColumns}, ${optionalColumns}`);
       
@@ -776,6 +836,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
           birthday: u.birthday,
           requirePhoto: u.require_photo,
           isAdmin: u.is_admin ?? (u.id === 'admin' || u.position === 'Администратор'),
+          isChatAdmin: u.is_chat_admin,
           forcePinChange: u.force_pin_change,
           organizationId: cleanValue(u.organization_id),
           branchId: cleanValue(u.branch_id),
@@ -784,6 +845,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
           payroll: u.payroll,
           telegramChatId: u.telegram_chat_id,
           telegramSettings: u.telegram_settings,
+          lastChatRead: u.last_chat_read,
           isArchived: u.is_archived,
           archivedAt: u.archived_at,
           archiveReason: u.archive_reason
@@ -834,6 +896,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       birthday: user.birthday,
       require_photo: user.requirePhoto,
       is_admin: user.isAdmin,
+      is_chat_admin: user.isChatAdmin,
       force_pin_change: user.forcePinChange,
       organization_id: orgId
     };
@@ -854,6 +917,9 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
     }
     if (user.telegramSettings !== undefined) {
       payload.telegram_settings = user.telegramSettings;
+    }
+    if (user.lastChatRead !== undefined) {
+      payload.last_chat_read = user.lastChatRead;
     }
     if (user.branchId !== undefined) {
       payload.branch_id = user.branchId;
@@ -905,6 +971,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
         birthday: user.birthday,
         require_photo: user.requirePhoto,
         is_admin: user.isAdmin,
+        is_chat_admin: user.isChatAdmin,
         force_pin_change: user.forcePinChange,
         organization_id: orgId,
         push_token: user.pushToken !== undefined ? user.pushToken : null,
@@ -912,6 +979,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
         payroll: user.payroll !== undefined ? user.payroll : null,
         telegram_chat_id: user.telegramChatId !== undefined ? user.telegramChatId : null,
         telegram_settings: user.telegramSettings !== undefined ? user.telegramSettings : null,
+        last_chat_read: user.lastChatRead !== undefined ? user.lastChatRead : null,
         branch_id: user.branchId !== undefined ? user.branchId : null
       };
       return p;
@@ -923,7 +991,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       console.error('Error batch upserting users:', error);
       if (error.code === '42703' || error.code === 'PGRST204' || error.message?.includes('column')) {
         const minimalPayload = payload.map(p => {
-          const { push_token, planned_shifts, payroll, telegram_chat_id, telegram_settings, branch_id, ...rest } = p;
+          const { push_token, planned_shifts, payroll, telegram_chat_id, telegram_settings, last_chat_read, branch_id, ...rest } = p;
           return rest;
         });
         const { error: retryError } = await supabase.from('users').upsert(minimalPayload);
@@ -967,6 +1035,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
         birthday: u.birthday,
         requirePhoto: u.require_photo,
         isAdmin: u.is_admin,
+        isChatAdmin: u.is_chat_admin,
         forcePinChange: u.force_pin_change,
         organizationId: cleanValue(u.organization_id),
         branchId: cleanValue(u.branch_id),
@@ -975,6 +1044,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
         payroll: u.payroll,
         telegramChatId: u.telegram_chat_id,
         telegramSettings: u.telegram_settings,
+        lastChatRead: u.last_chat_read,
         isArchived: u.is_archived,
         archivedAt: u.archived_at,
         archiveReason: u.archive_reason
@@ -1006,7 +1076,12 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       query = query.eq('organization_id', orgId);
     }
     
-    const { data } = await query.order('name');
+    const { data, error } = await query.order('name');
+    
+    if (error) {
+      console.error('Error in getMachines:', error);
+      throw error;
+    }
     
     // Filter out archived machines on the client side just in case the column doesn't exist
     // to avoid breaking the query
@@ -1145,7 +1220,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       console.error('Error fetching positions:', error);
       console.error('Error code:', error.code);
       console.error('Error message:', error.message);
-      return [];
+      throw error;
     }
     return data?.map(p => ({
       name: p.name,
@@ -1244,34 +1319,32 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
   },
   getBranches: async (orgId: string) => {
     if (!checkConfig()) return null;
-    try {
-      let query = supabase.from('branches').select('*');
-      
-      if (orgId === 'demo_org') {
-        query = query.or('organization_id.eq.demo_org,organization_id.is.null');
-      } else {
-        query = query.eq('organization_id', orgId);
-      }
-      
-      const { data, error } = await query.order('name');
-      
-      if (error) {
-        // If table doesn't exist or other error, return empty array gracefully
-        console.warn('Error fetching branches (might not exist yet):', error.message);
+    let query = supabase.from('branches').select('*');
+    
+    if (orgId === 'demo_org') {
+      query = query.or('organization_id.eq.demo_org,organization_id.is.null');
+    } else {
+      query = query.eq('organization_id', orgId);
+    }
+    
+    const { data, error } = await query.order('name');
+    
+    if (error) {
+      if (error.code === 'PGRST205' || error.message?.includes('does not exist')) {
+        console.warn('Table branches not found');
         return [];
       }
-      
-      return (data || []).map(b => ({
-        id: cleanValue(b.id),
-        organizationId: cleanValue(b.organization_id),
-        name: b.name,
-        address: b.address,
-        locationSettings: b.location_settings
-      }));
-    } catch (e) {
-      console.error('Exception in getBranches:', e);
-      return [];
+      console.error('Error fetching branches:', error);
+      throw error;
     }
+    
+    return (data || []).map(b => ({
+      id: cleanValue(b.id),
+      organizationId: cleanValue(b.organization_id),
+      name: b.name,
+      address: b.address,
+      locationSettings: b.location_settings
+    }));
   },
   upsertBranch: async (branch: any, orgId: string) => {
     if (!checkConfig()) return { error: 'Not configured' };
@@ -1462,11 +1535,22 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
     if (!checkConfig()) return null;
     const { data, error } = await supabase.from('plans').select('*').order('type');
     if (error) return null;
-    return data;
+    return data.map(plan => ({
+      ...plan,
+      machinePrice: plan.machine_price || 0,
+      userPrice: plan.user_price || 0
+    }));
   },
   savePlan: async (plan: any) => {
     if (!isConfigured()) return;
-    const { error } = await supabase.from('plans').upsert(plan);
+    const { error } = await supabase.from('plans').upsert({
+      type: plan.type,
+      name: plan.name,
+      limits: plan.limits,
+      price: plan.price,
+      machine_price: plan.machinePrice,
+      user_price: plan.userPrice
+    });
     if (error) console.error('Error saving plan:', error);
   },
   getAllOrganizations: async () => {
@@ -1484,6 +1568,14 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       roundShiftMinutes: org.round_shift_minutes,
       nightShiftBonus: org.night_shift_bonus,
       debugEnabled: org.debug_enabled,
+      contractNumber: org.contract_number,
+      contractDate: org.contract_date,
+      clientRequisites: org.client_requisites,
+      extraMachines: org.extra_machines || 0,
+      extraUsers: org.extra_users || 0,
+      useSupabaseProxy: org.use_supabase_proxy,
+      useTelegramProxy: org.use_telegram_proxy,
+      onboardingCompleted: org.onboarding_completed,
       createdAt: org.created_at
     }));
   },
@@ -1560,6 +1652,32 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       dbUpdates.night_shift_bonus = updates.nightShiftBonus;
       delete dbUpdates.nightShiftBonus;
     }
+    if (updates.autoNightShift !== undefined) {
+      dbUpdates.auto_night_shift = updates.autoNightShift;
+      delete dbUpdates.autoNightShift;
+    }
+    if (updates.nightShiftStart !== undefined) {
+      dbUpdates.night_shift_start = updates.nightShiftStart;
+      delete dbUpdates.nightShiftStart;
+    }
+    if (updates.nightShiftEnd !== undefined) {
+      dbUpdates.night_shift_end = updates.nightShiftEnd;
+      delete dbUpdates.nightShiftEnd;
+    }
+    
+    // We don't extract shiftStarts here anymore, let them fail and be caught by fallback
+    // or we can just extract them and fetch currentOrg here.
+    // Actually, it's safer to just let them go to dbUpdates, and if they fail, the fallback will handle them.
+    if (updates.shiftStart1 !== undefined) {
+      dbUpdates.shiftStart1 = updates.shiftStart1;
+    }
+    if (updates.shiftStart2 !== undefined) {
+      dbUpdates.shiftStart2 = updates.shiftStart2;
+    }
+    if (updates.shiftStart3 !== undefined) {
+      dbUpdates.shiftStart3 = updates.shiftStart3;
+    }
+
     if (updates.locationSettings !== undefined) {
       dbUpdates.location_settings = updates.locationSettings;
       delete dbUpdates.locationSettings;
@@ -1575,6 +1693,42 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
     if (updates.autoShiftCompletion !== undefined) {
       dbUpdates.auto_shift_completion = updates.autoShiftCompletion;
       delete dbUpdates.autoShiftCompletion;
+    }
+    if (updates.clientRequisites !== undefined) {
+      dbUpdates.client_requisites = updates.clientRequisites;
+      delete dbUpdates.clientRequisites;
+    }
+    if (updates.contractNumber !== undefined) {
+      dbUpdates.contract_number = updates.contractNumber;
+      delete dbUpdates.contractNumber;
+    }
+    if (updates.contractDate !== undefined) {
+      dbUpdates.contract_date = updates.contractDate;
+      delete dbUpdates.contractDate;
+    }
+    if (updates.extraMachines !== undefined) {
+      dbUpdates.extra_machines = updates.extraMachines;
+      delete dbUpdates.extraMachines;
+    }
+    if (updates.extraUsers !== undefined) {
+      dbUpdates.extra_users = updates.extraUsers;
+      delete dbUpdates.extraUsers;
+    }
+    if (updates.onboardingCompleted !== undefined) {
+      dbUpdates.onboarding_completed = updates.onboardingCompleted;
+      delete dbUpdates.onboardingCompleted;
+    }
+    if (updates.applyThemeToEmployees !== undefined) {
+      dbUpdates.apply_theme_to_employees = updates.applyThemeToEmployees;
+      delete dbUpdates.applyThemeToEmployees;
+    }
+    if (updates.useSupabaseProxy !== undefined) {
+      dbUpdates.use_supabase_proxy = updates.useSupabaseProxy;
+      delete dbUpdates.useSupabaseProxy;
+    }
+    if (updates.useTelegramProxy !== undefined) {
+      dbUpdates.use_telegram_proxy = updates.useTelegramProxy;
+      delete dbUpdates.useTelegramProxy;
     }
 
     const { error } = await supabase.from('organizations').update(dbUpdates).eq('id', orgId);
@@ -1606,10 +1760,38 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
           mergedSettings.maxShiftDuration = dbUpdates.max_shift_duration;
         }
         if (dbUpdates.round_shift_minutes !== undefined) {
-          mergedSettings.roundShiftMinutes = dbUpdates.round_shift_minutes;
+          mergedSettings.roundShiftMinutes = typeof dbUpdates.round_shift_minutes === 'boolean' ? dbUpdates.round_shift_minutes : (typeof dbUpdates.round_shift_minutes === 'number' ? dbUpdates.round_shift_minutes > 0 : false);
         }
         if (dbUpdates.night_shift_bonus !== undefined) {
           mergedSettings.nightShiftBonus = dbUpdates.night_shift_bonus;
+        }
+        if (dbUpdates.auto_night_shift !== undefined) {
+          mergedSettings.autoNightShift = dbUpdates.auto_night_shift;
+        }
+        if (dbUpdates.night_shift_start !== undefined) {
+          mergedSettings.nightShiftStart = dbUpdates.night_shift_start;
+        }
+        if (dbUpdates.night_shift_end !== undefined) {
+          mergedSettings.nightShiftEnd = dbUpdates.night_shift_end;
+        }
+        if (dbUpdates.shiftStart1 !== undefined) {
+          mergedSettings.shiftStart1 = dbUpdates.shiftStart1;
+        }
+        if (dbUpdates.shiftStart2 !== undefined) {
+          mergedSettings.shiftStart2 = dbUpdates.shiftStart2;
+        }
+        if (dbUpdates.shiftStart3 !== undefined) {
+          mergedSettings.shiftStart3 = dbUpdates.shiftStart3;
+        }
+        
+        if (dbUpdates.onboarding_completed !== undefined) {
+          mergedSettings.onboardingCompleted = dbUpdates.onboarding_completed;
+        }
+        if (dbUpdates.apply_theme_to_employees !== undefined) {
+          mergedSettings.applyThemeToEmployees = dbUpdates.apply_theme_to_employees;
+        }
+        if (dbUpdates.theme !== undefined) {
+          mergedSettings.theme = dbUpdates.theme;
         }
         
         const { 
@@ -1620,6 +1802,15 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
           max_shift_duration,
           round_shift_minutes,
           night_shift_bonus,
+          auto_night_shift,
+          night_shift_start,
+          night_shift_end,
+          shiftStart1,
+          shiftStart2,
+          shiftStart3,
+          onboarding_completed,
+          apply_theme_to_employees,
+          theme,
           ...minimalUpdates 
         } = dbUpdates;
         
@@ -1658,10 +1849,14 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       telegram_settings: org.telegramSettings,
       auto_shift_completion: org.autoShiftCompletion,
       max_shift_duration: org.maxShiftDuration,
-      round_shift_minutes: org.roundShiftMinutes,
+      round_shift_minutes: typeof org.roundShiftMinutes === 'boolean' ? org.roundShiftMinutes : (typeof org.roundShiftMinutes === 'number' ? org.roundShiftMinutes > 0 : false),
       night_shift_bonus: org.nightShiftBonus,
+      use_supabase_proxy: org.useSupabaseProxy,
+      use_telegram_proxy: org.useTelegramProxy,
       contract_number: contractNumber,
-      contract_date: contractDate
+      contract_date: contractDate,
+      extra_machines: org.extraMachines || 0,
+      extra_users: org.extraUsers || 0
     }, { onConflict: 'id' });
     
     if (error && error.code !== '23505') {
@@ -1674,7 +1869,7 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
         if (org.telegramSettings) mergedSettings.telegramSettings = org.telegramSettings;
         if (org.autoShiftCompletion) mergedSettings.autoShiftCompletion = org.autoShiftCompletion;
         if (org.maxShiftDuration !== undefined) mergedSettings.maxShiftDuration = org.maxShiftDuration;
-        if (org.roundShiftMinutes !== undefined) mergedSettings.roundShiftMinutes = org.roundShiftMinutes;
+        if (org.roundShiftMinutes !== undefined) mergedSettings.roundShiftMinutes = typeof org.roundShiftMinutes === 'boolean' ? org.roundShiftMinutes : (typeof org.roundShiftMinutes === 'number' ? org.roundShiftMinutes > 0 : false);
         if (org.nightShiftBonus !== undefined) mergedSettings.nightShiftBonus = org.nightShiftBonus;
         if (org.inviteToken) mergedSettings.inviteToken = org.inviteToken;
         
@@ -1705,7 +1900,11 @@ CREATE POLICY "Super Admin logs access" ON work_logs FOR ALL USING (is_super_adm
       autoShiftCompletion: data.auto_shift_completion || data.notification_settings?.autoShiftCompletion,
       maxShiftDuration: data.max_shift_duration || data.notification_settings?.maxShiftDuration || 14 * 60,
       roundShiftMinutes: data.round_shift_minutes || data.notification_settings?.roundShiftMinutes || 15,
-      nightShiftBonus: data.night_shift_bonus || data.notification_settings?.nightShiftBonus || 0
+      nightShiftBonus: data.night_shift_bonus || data.notification_settings?.nightShiftBonus || 0,
+      extraMachines: data.extra_machines || 0,
+      extraUsers: data.extra_users || 0,
+      useSupabaseProxy: data.use_supabase_proxy,
+      useTelegramProxy: data.use_telegram_proxy
     };
   },
   resetAdminPin: async (orgId: string, newPin: string) => {
@@ -1772,7 +1971,10 @@ CREATE TABLE IF NOT EXISTS organizations (
   auto_shift_completion JSONB,
   max_shift_duration INTEGER DEFAULT 720,
   round_shift_minutes BOOLEAN DEFAULT false,
-  night_shift_bonus INTEGER DEFAULT 0
+  night_shift_bonus INTEGER DEFAULT 0,
+  contract_number TEXT,
+  contract_date TEXT,
+  client_requisites JSONB DEFAULT '{}'
 );
 ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow public read" ON organizations;
@@ -1883,7 +2085,9 @@ CREATE TABLE IF NOT EXISTS plans (
   type TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   limits JSONB DEFAULT '{}',
-  price INTEGER DEFAULT 0
+  price INTEGER DEFAULT 0,
+  machine_price INTEGER DEFAULT 0,
+  user_price INTEGER DEFAULT 0
 );
 ALTER TABLE plans ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow public read" ON plans;
@@ -2106,7 +2310,11 @@ CREATE TABLE IF NOT EXISTS invoices (
   plan_type TEXT NOT NULL,
   amount NUMERIC NOT NULL,
   term_months INTEGER NOT NULL,
+  extra_machines INTEGER DEFAULT 0,
+  extra_users INTEGER DEFAULT 0,
   status TEXT DEFAULT 'pending',
+  payment_method TEXT DEFAULT 'bank',
+  payment_purpose TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
@@ -2150,7 +2358,7 @@ CREATE POLICY "Allow public update" ON invoices FOR UPDATE USING (true);
     }
 
     try {
-      const tablesToCheck = ['organizations', 'users', 'work_logs', 'machines', 'positions', 'plans', 'promo_codes', 'active_shifts', 'system_config', 'payroll_snapshots', 'payroll_payments', 'payroll_periods', 'payment_history', 'support_messages', 'invoices', 'receiving_organizations'];
+      const tablesToCheck = ['organizations', 'users', 'work_logs', 'machines', 'positions', 'plans', 'promo_codes', 'active_shifts', 'system_config', 'payroll_snapshots', 'payroll_payments', 'payroll_periods', 'payment_history', 'support_messages', 'invoices', 'receiving_organizations', 'chat_messages'];
       results.storage = {};
       
       try {
@@ -2276,12 +2484,14 @@ CREATE POLICY "Allow public update" ON positions FOR UPDATE USING (true);
 DROP POLICY IF EXISTS "Allow public delete" ON positions;
 CREATE POLICY "Allow public delete" ON positions FOR DELETE USING (true);
             `);
-          } else if (table === 'system_config') {
-            results.sqlFixes.push(`
+      } else if (table === 'system_config') {
+        results.sqlFixes.push(`
 CREATE TABLE IF NOT EXISTS system_config (
   id TEXT PRIMARY KEY,
   super_admin_pin TEXT,
-  global_admin_pin TEXT
+  global_admin_pin TEXT,
+  use_supabase_proxy BOOLEAN DEFAULT FALSE,
+  use_telegram_proxy BOOLEAN DEFAULT FALSE
 );
 ALTER TABLE system_config ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow public read" ON system_config;
@@ -2292,7 +2502,9 @@ DROP POLICY IF EXISTS "Allow public insert" ON system_config;
 CREATE POLICY "Allow public insert" ON system_config FOR INSERT WITH CHECK (true);
 
 -- Insert default row
-INSERT INTO system_config (id, super_admin_pin, global_admin_pin) VALUES ('global', '7777', '0000') ON CONFLICT (id) DO NOTHING;
+INSERT INTO system_config (id, super_admin_pin, global_admin_pin, use_supabase_proxy, use_telegram_proxy) 
+VALUES ('global', '7777', '0000', false, false) 
+ON CONFLICT (id) DO NOTHING;
             `);
           } else {
              // Generic fallback for other tables
@@ -2312,7 +2524,10 @@ CREATE TABLE IF NOT EXISTS organizations (
   auto_shift_completion JSONB,
   max_shift_duration INTEGER DEFAULT 720,
   round_shift_minutes BOOLEAN DEFAULT false,
-  night_shift_bonus INTEGER DEFAULT 0
+  night_shift_bonus INTEGER DEFAULT 0,
+  contract_number TEXT,
+  contract_date TEXT,
+  client_requisites JSONB DEFAULT '{}'
 );
 ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow public read" ON organizations;
@@ -2409,7 +2624,9 @@ CREATE TABLE IF NOT EXISTS plans (
   type TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   limits JSONB DEFAULT '{}',
-  price INTEGER DEFAULT 0
+  price INTEGER DEFAULT 0,
+  machine_price INTEGER DEFAULT 0,
+  user_price INTEGER DEFAULT 0
 );
 ALTER TABLE plans ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow public read" ON plans;
@@ -2534,19 +2751,21 @@ CREATE POLICY "Allow public delete" ON branches FOR DELETE USING (true);
 
       // Check specific columns
       const expectedSchema: Record<string, string[]> = {
-        organizations: ['id', 'name', 'email', 'owner_id', 'plan', 'status', 'expiry_date', 'notification_settings', 'location_settings', 'telegram_settings', 'auto_shift_completion', 'max_shift_duration', 'round_shift_minutes', 'night_shift_bonus'],
+        organizations: ['id', 'name', 'email', 'owner_id', 'plan', 'status', 'expiry_date', 'notification_settings', 'location_settings', 'telegram_settings', 'auto_shift_completion', 'max_shift_duration', 'round_shift_minutes', 'night_shift_bonus', 'extra_machines', 'extra_users', 'use_supabase_proxy', 'use_telegram_proxy'],
         users: ['id', 'organization_id', 'name', 'role', 'department', 'position', 'pin', 'require_photo', 'is_admin', 'force_pin_change', 'push_token', 'planned_shifts', 'payroll', 'branch_id'],
         work_logs: ['id', 'user_id', 'organization_id', 'date', 'entry_type', 'machine_id', 'check_in', 'check_out', 'duration_minutes', 'photo_in', 'photo_out', 'is_corrected', 'correction_note', 'correction_timestamp', 'is_night_shift', 'fine', 'bonus', 'items_produced', 'location', 'branch_id'],
         machines: ['id', 'organization_id', 'name', 'branch_id', 'is_archived'],
         positions: ['name', 'organization_id', 'permissions', 'payroll'],
-        plans: ['type', 'name', 'limits', 'price'],
+        plans: ['type', 'name', 'limits', 'price', 'machine_price', 'user_price'],
         promo_codes: ['id', 'code', 'plan_type', 'duration_days', 'max_uses', 'used_count', 'created_at', 'expires_at', 'is_active', 'last_used_by', 'last_used_at'],
         active_shifts: ['user_id', 'organization_id', 'shifts', 'shifts_json'],
-        system_config: ['id', 'super_admin_pin', 'global_admin_pin'],
+        system_config: ['id', 'super_admin_pin', 'global_admin_pin', 'use_supabase_proxy', 'use_telegram_proxy'],
         payroll_snapshots: ['id', 'user_id', 'organization_id', 'month', 'total_minutes', 'total_salary', 'bonuses', 'fines', 'rate_used', 'rate_type', 'calculated_at', 'details'],
         payroll_payments: ['id', 'user_id', 'organization_id', 'amount', 'date', 'type', 'comment', 'created_at'],
         payroll_periods: ['id', 'organization_id', 'month', 'status', 'closed_at', 'closed_by'],
-        branches: ['id', 'organization_id', 'name', 'address', 'location_settings', 'created_at']
+        branches: ['id', 'organization_id', 'name', 'address', 'location_settings', 'created_at'],
+        invoices: ['id', 'organization_id', 'contract_number', 'date', 'plan_type', 'amount', 'term_months', 'status', 'payment_method', 'payment_purpose', 'extra_machines', 'extra_users'],
+        chat_messages: ['id', 'organization_id', 'sender_id', 'sender_name', 'message', 'created_at', 'is_deleted', 'deleted_by', 'deleted_at', 'to_admin_only', 'recipient_id', 'recipient_name']
       };
 
       for (const [table, columns] of Object.entries(expectedSchema)) {
@@ -2572,7 +2791,7 @@ CREATE POLICY "Allow public delete" ON branches FOR DELETE USING (true);
                  
                  // Generate basic SQL fix
                  let colType = 'TEXT';
-                 if (col.includes('count') || col.includes('days') || col.includes('uses') || col.includes('minutes') || col === 'price' || col === 'fine' || col === 'bonus') colType = 'INTEGER';
+                 if (col.includes('count') || col.includes('days') || col.includes('uses') || col.includes('minutes') || col === 'price' || col === 'fine' || col === 'bonus' || col === 'extra_machines' || col === 'extra_users' || col === 'amount' || col === 'term_months') colType = 'INTEGER';
                  else if (col.includes('date') || col.includes('_at') || col.includes('timestamp') || col === 'check_in' || col === 'check_out') colType = 'TIMESTAMPTZ';
                  else if (col.startsWith('is_') || col.startsWith('require_') || col.startsWith('force_')) colType = 'BOOLEAN';
                  else if (col === 'notification_settings' || col === 'location_settings' || col === 'telegram_settings' || col === 'auto_shift_completion' || col === 'permissions' || col === 'limits' || col === 'shifts_json' || col === 'shifts' || col === 'planned_shifts' || col === 'payroll') colType = 'JSONB';
@@ -2910,6 +3129,41 @@ $$;
       return { error: e.message };
     }
   },
+  getAllPayrollData: async (orgId: string) => {
+    if (!checkConfig()) return { snapshots: [], payments: [] };
+    const [snapshotsRes, paymentsRes] = await Promise.all([
+      supabase.from('payroll_snapshots').select('*').eq('organization_id', orgId),
+      supabase.from('payroll_payments').select('*').eq('organization_id', orgId)
+    ]);
+    
+    const snapshots = (snapshotsRes.data || []).map(s => ({
+      id: s.id,
+      userId: s.user_id,
+      organizationId: s.organization_id,
+      month: s.month,
+      totalMinutes: s.total_minutes,
+      totalSalary: s.total_salary,
+      bonuses: s.bonuses,
+      fines: s.fines,
+      rateUsed: s.rate_used,
+      rateType: s.rate_type,
+      calculatedAt: s.calculated_at,
+      details: s.details
+    }));
+
+    const payments = (paymentsRes.data || []).map(p => ({
+      id: p.id,
+      userId: p.user_id,
+      organizationId: p.organization_id,
+      amount: p.amount,
+      date: p.date,
+      type: p.type,
+      comment: p.comment,
+      createdAt: p.created_at
+    }));
+
+    return { snapshots, payments };
+  },
   getPayrollSnapshots: async (orgId: string, month: string) => {
     if (!checkConfig()) return [];
     const { data, error } = await supabase
@@ -3049,7 +3303,11 @@ $$;
     if (!checkConfig()) return [];
     const { data, error } = await supabase.from('receiving_organizations').select('*');
     if (error) {
-      console.error('Error fetching receiving organizations:', error);
+      if (error.code === 'PGRST205') {
+        console.warn('Table receiving_organizations not found');
+      } else {
+        console.error('Error fetching receiving organizations:', error);
+      }
       return [];
     }
     return data.map(d => ({
@@ -3069,6 +3327,14 @@ $$;
       requisites: org.requisites,
       is_default: org.isDefault
     });
+    if (error && error.code === 'PGRST205') {
+      return { error: 'Таблица receiving_organizations не найдена в базе данных. Пожалуйста, зайдите в панель Супер-Админа -> Диагностика и выполните SQL-скрипт для ее создания.' };
+    }
+    return { error };
+  },
+  deleteReceivingOrganization: async (id: string) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('receiving_organizations').delete().eq('id', id);
     return { error };
   },
   saveInvoice: async (invoice: Invoice) => {
@@ -3081,14 +3347,29 @@ $$;
       plan_type: invoice.planType,
       amount: invoice.amount,
       term_months: invoice.termMonths,
-      status: invoice.status
+      extra_machines: invoice.extraMachines,
+      extra_users: invoice.extraUsers,
+      status: invoice.status,
+      payment_method: invoice.paymentMethod,
+      payment_purpose: invoice.paymentPurpose
     });
+    if (error && error.code === 'PGRST205') {
+      return { error: 'Таблица invoices не найдена в базе данных. Пожалуйста, зайдите в панель Супер-Админа -> Диагностика и выполните SQL-скрипт для ее создания.' };
+    }
     return { error };
   },
   getInvoices: async (orgId: string) => {
     if (!checkConfig()) return [];
     const { data, error } = await supabase.from('invoices').select('*').eq('organization_id', orgId);
-    if (error || !data) return [];
+    if (error) {
+      if (error.code === 'PGRST205') {
+        console.warn('Table invoices not found');
+      } else {
+        console.error('Error fetching invoices:', error);
+      }
+      return [];
+    }
+    if (!data) return [];
     return data.map(d => ({ 
       id: d.id,
       organizationId: d.organization_id, 
@@ -3097,7 +3378,161 @@ $$;
       planType: d.plan_type,
       amount: d.amount,
       termMonths: d.term_months,
-      status: d.status
+      extraMachines: d.extra_machines,
+      extraUsers: d.extra_users,
+      status: d.status,
+      paymentMethod: d.payment_method || 'bank',
+      paymentPurpose: d.payment_purpose
     }));
   },
+  getAllInvoices: async () => {
+    if (!checkConfig()) return [];
+    const { data, error } = await supabase.from('invoices').select('*').order('created_at', { ascending: false });
+    if (error) {
+      if (error.code === 'PGRST205') {
+        console.warn('Table invoices not found');
+      } else {
+        console.error('Error fetching all invoices:', error);
+      }
+      return [];
+    }
+    if (!data) return [];
+    return data.map(d => ({ 
+      id: d.id,
+      organizationId: d.organization_id, 
+      contractNumber: d.contract_number, 
+      date: d.date,
+      planType: d.plan_type,
+      amount: d.amount,
+      termMonths: d.term_months,
+      extraMachines: d.extra_machines,
+      extraUsers: d.extra_users,
+      status: d.status,
+      paymentMethod: d.payment_method || 'bank',
+      paymentPurpose: d.payment_purpose
+    }));
+  },
+  updateInvoiceStatus: async (id: string, status: string) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('invoices').update({ status }).eq('id', id);
+    return { error };
+  },
+  activateInvoice: async (invoiceId: string) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    
+    // 1. Get invoice details
+    const { data: invoice, error: invError } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('id', invoiceId)
+      .single();
+      
+    if (invError || !invoice) return { error: invError || 'Invoice not found' };
+    if (invoice.status === 'paid') return { error: 'Invoice already paid' };
+    
+    // 2. Update invoice status
+    const { error: updateInvError } = await supabase
+      .from('invoices')
+      .update({ status: 'paid' })
+      .eq('id', invoiceId);
+      
+    if (updateInvError) return { error: updateInvError };
+    
+    // 3. Get organization details
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .select('*')
+      .eq('id', invoice.organization_id)
+      .single();
+      
+    if (orgError || !org) return { error: orgError || 'Organization not found' };
+    
+    // 4. Calculate new expiry date
+    const currentExpiry = org.expiry_date ? new Date(org.expiry_date) : new Date();
+    const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
+    
+    const newExpiry = new Date(baseDate);
+    newExpiry.setMonth(newExpiry.getMonth() + (invoice.term_months || 1));
+    
+    // 5. Update organization
+    const { error: updateOrgError } = await supabase
+      .from('organizations')
+      .update({
+        plan: invoice.plan_type,
+        status: 'active',
+        expiry_date: newExpiry.toISOString(),
+        extra_machines: (org.extra_machines || 0) + (invoice.extra_machines || 0),
+        extra_users: (org.extra_users || 0) + (invoice.extra_users || 0)
+      })
+      .eq('id', invoice.organization_id);
+      
+    return { error: updateOrgError };
+  },
+  deleteInvoice: async (id: string) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('invoices').delete().eq('id', id);
+    return { error };
+  },
+  getChatMessages: async (orgId: string, limit = 50, before?: string): Promise<ChatMessage[]> => {
+    if (!checkConfig()) return [];
+    
+    let query = supabase.from('chat_messages').select('*').order('created_at', { ascending: false }).limit(limit);
+    
+    if (before) {
+      query = query.lt('created_at', before);
+    }
+    
+    if (orgId === 'demo_org') {
+      query = query.or('organization_id.eq.demo_org,organization_id.is.null');
+    } else {
+      query = query.eq('organization_id', orgId);
+    }
+    
+    const { data, error } = await query;
+    if (error) {
+      console.error('Error fetching chat messages:', error);
+      return [];
+    }
+    return (data || []).reverse().map(m => ({
+      id: cleanValue(m.id),
+      organizationId: cleanValue(m.organization_id),
+      senderId: cleanValue(m.sender_id),
+      senderName: m.sender_name,
+      message: m.message,
+      createdAt: m.created_at,
+      isDeleted: m.is_deleted,
+      deletedBy: cleanValue(m.deleted_by),
+      deletedAt: m.deleted_at,
+      toAdminOnly: m.to_admin_only,
+      recipientId: cleanValue(m.recipient_id),
+      recipientName: m.recipient_name
+    }));
+  },
+  saveChatMessage: async (message: ChatMessage) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('chat_messages').upsert({
+      id: message.id,
+      organization_id: message.organizationId,
+      sender_id: message.senderId,
+      sender_name: message.senderName,
+      message: message.message,
+      created_at: message.createdAt,
+      is_deleted: message.isDeleted,
+      deleted_by: message.deletedBy,
+      deleted_at: message.deletedAt,
+      to_admin_only: message.toAdminOnly,
+      recipient_id: message.recipientId,
+      recipient_name: message.recipientName
+    });
+    return { error };
+  },
+  deleteChatMessage: async (messageId: string, adminId: string) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('chat_messages').update({
+      is_deleted: true,
+      deleted_by: adminId,
+      deleted_at: new Date().toISOString()
+    }).eq('id', messageId);
+    return { error };
+  }
 };

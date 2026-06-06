@@ -1,14 +1,15 @@
 
 import React, { useState, useEffect } from 'react';
-import { Organization, PlanType, Plan, PromoCode, User, UserRole } from '../types';
+import { Organization, PlanType, Plan, PromoCode, User, UserRole, Invoice } from '../types';
 import { db, supabase } from '../lib/supabase';
 import { STORAGE_KEYS } from '../constants';
-import { Users, Building2, CreditCard, Activity, ShieldCheck, Search, RefreshCw, ExternalLink, Settings2, X, Check, Plus, LayoutGrid, Zap, Briefcase, Save, Camera, Moon, BarChart3, Megaphone, Ticket, Trash2, Database, AlertCircle, PlayCircle, Bell, MessageSquare, History, HelpCircle, FileText } from 'lucide-react';
+import { Users, Building2, CreditCard, Activity, ShieldCheck, Search, RefreshCw, ExternalLink, Settings2, X, Check, Plus, LayoutGrid, Zap, Briefcase, Save, Camera, Moon, BarChart3, Megaphone, Ticket, Trash2, Database, AlertCircle, PlayCircle, Bell, MessageSquare, History, HelpCircle, FileText, Coins, LogOut, PanelLeftOpen, PanelLeftClose, Globe, Send } from 'lucide-react';
 import { SupportChat } from './employer/SupportChat';
 import { DocumentationView } from './DocumentationView';
 import { RequisitesView } from './RequisitesView';
 
 interface SuperAdminViewProps {
+  currentUser: User | null;
   onLogout: () => void;
   onUpdateSystemConfig?: (config: any) => void;
   unreadSupportMessages?: number;
@@ -18,6 +19,7 @@ interface SuperAdminViewProps {
 }
 
 const SuperAdminView: React.FC<SuperAdminViewProps> = ({ 
+  currentUser,
   onLogout, 
   onUpdateSystemConfig, 
   unreadSupportMessages = 0, 
@@ -33,7 +35,9 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [editingOrg, setEditingOrg] = useState<Organization | null>(null);
   const [editingAdmin, setEditingAdmin] = useState<User | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'orgs' | 'plans' | 'marketing' | 'diagnostics' | 'app_diagnostics' | 'support' | 'instructions' | 'requisites' | 'system'>('orgs');
+  const [activeTab, setActiveTab] = useState<'orgs' | 'plans' | 'marketing' | 'diagnostics' | 'app_diagnostics' | 'support' | 'instructions' | 'requisites' | 'system' | 'invoices'>('orgs');
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [viewingUsersOrg, setViewingUsersOrg] = useState<{ id: string; name: string } | null>(null);
   const [orgUsers, setOrgUsers] = useState<User[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
@@ -52,6 +56,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   });
   const [saving, setSaving] = useState(false);
   const [confirmDeleteOrg, setConfirmDeleteOrg] = useState<Organization | null>(null);
+  const [invoiceToDelete, setInvoiceToDelete] = useState<string | null>(null);
   const [deletePinInput, setDeletePinInput] = useState('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [resetPinConfirm, setResetPinConfirm] = useState<{ orgId: string; pin: string } | null>(null);
@@ -62,11 +67,70 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [systemConfig, setSystemConfig] = useState<any>(null);
   const [newSuperAdminPin, setNewSuperAdminPin] = useState('');
   const [newGlobalAdminPin, setNewGlobalAdminPin] = useState('');
+  const [useSupabaseProxy, setUseSupabaseProxy] = useState(localStorage.getItem('use_supabase_proxy') === 'true');
+  const [useTelegramProxy, setUseTelegramProxy] = useState(localStorage.getItem('use_telegram_proxy') === 'true');
 
   // Reset unread count when entering support view or changing selected org
   useEffect(() => {
     if (onTabChange) onTabChange(activeTab);
+    if (activeTab === 'invoices') {
+      fetchInvoices();
+    }
   }, [activeTab, onTabChange]);
+
+  const fetchInvoices = async () => {
+    setLoadingInvoices(true);
+    try {
+      const data = await db.getAllInvoices();
+      setInvoices(data);
+    } catch (e) {
+      console.error('Error fetching invoices:', e);
+    } finally {
+      setLoadingInvoices(false);
+    }
+  };
+
+  const handleUpdateInvoiceStatus = async (id: string, status: 'pending' | 'paid' | 'cancelled') => {
+    try {
+      let error;
+      if (status === 'paid') {
+        const result = await db.activateInvoice(id);
+        error = result.error;
+      } else {
+        const result = await db.updateInvoiceStatus(id, status);
+        error = result.error;
+      }
+      
+      if (error) throw error;
+      setInvoices(prev => prev.map(inv => inv.id === id ? { ...inv, status } : inv));
+      
+      // If paid, also refresh organizations to see updated plans
+      if (status === 'paid') {
+        const orgs = await db.getAllOrganizations();
+        if (orgs) setOrganizations(orgs);
+      }
+    } catch (e) {
+      console.error('Error updating invoice status:', e);
+      alert('Ошибка при обновлении статуса');
+    }
+  };
+
+  const handleDeleteInvoice = async (id: string) => {
+    setInvoiceToDelete(id);
+  };
+
+  const confirmDeleteInvoice = async () => {
+    if (!invoiceToDelete) return;
+    try {
+      const { error } = await db.deleteInvoice(invoiceToDelete);
+      if (error) throw error;
+      setInvoices(prev => prev.filter(inv => inv.id !== invoiceToDelete));
+      setInvoiceToDelete(null);
+    } catch (e) {
+      console.error('Error deleting invoice:', e);
+      alert('Ошибка при удалении счета');
+    }
+  };
 
   const runDiagnostics = async () => {
     setCheckingDiagnostics(true);
@@ -202,17 +266,27 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     try {
       await db.updateSystemConfig({ 
         super_admin_pin: newSuperAdminPin,
-        global_admin_pin: newGlobalAdminPin
+        global_admin_pin: newGlobalAdminPin,
+        use_supabase_proxy: useSupabaseProxy,
+        use_telegram_proxy: useTelegramProxy
       });
+      
+      localStorage.setItem('use_supabase_proxy', String(useSupabaseProxy));
+      localStorage.setItem('use_telegram_proxy', String(useTelegramProxy));
+
       setSystemConfig({ 
         ...systemConfig, 
         super_admin_pin: newSuperAdminPin,
-        global_admin_pin: newGlobalAdminPin
+        global_admin_pin: newGlobalAdminPin,
+        use_supabase_proxy: useSupabaseProxy,
+        use_telegram_proxy: useTelegramProxy
       });
       if (onUpdateSystemConfig) {
         onUpdateSystemConfig({
           super_admin_pin: newSuperAdminPin,
-          global_admin_pin: newGlobalAdminPin
+          global_admin_pin: newGlobalAdminPin,
+          use_supabase_proxy: useSupabaseProxy,
+          use_telegram_proxy: useTelegramProxy
         });
       }
       alert('Настройки системы обновлены');
@@ -261,6 +335,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         setSystemConfig(dbConfig);
         setNewSuperAdminPin(dbConfig.super_admin_pin || '7777');
         setNewGlobalAdminPin(dbConfig.global_admin_pin || '0000');
+        setUseSupabaseProxy(dbConfig.use_supabase_proxy ?? (localStorage.getItem('use_supabase_proxy') === 'true'));
+        setUseTelegramProxy(dbConfig.use_telegram_proxy ?? (localStorage.getItem('use_telegram_proxy') === 'true'));
       }
 
       if (dbPlans && dbPlans.length > 0) {
@@ -276,18 +352,24 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
             type: PlanType.FREE,
             name: 'Бесплатный',
             price: 0,
+            machinePrice: 500,
+            userPrice: 200,
             limits: { maxUsers: 3, maxMachines: 2, features: { photoCapture: false, nightShift: false, advancedAnalytics: false, payroll: false, shiftMonitoring: false, payments: true, multipleBranches: false, auditLog: false } }
           },
           {
             type: PlanType.PRO,
             name: 'Профессиональный',
             price: 2900,
+            machinePrice: 500,
+            userPrice: 200,
             limits: { maxUsers: 20, maxMachines: 10, features: { photoCapture: true, nightShift: true, advancedAnalytics: true, payroll: true, shiftMonitoring: true, payments: true, multipleBranches: true, auditLog: true } }
           },
           {
             type: PlanType.BUSINESS,
             name: 'Бизнес',
             price: 9900,
+            machinePrice: 0,
+            userPrice: 0,
             limits: { maxUsers: 1000, maxMachines: 1000, features: { photoCapture: true, nightShift: true, advancedAnalytics: true, payroll: true, shiftMonitoring: true, payments: true, multipleBranches: true, auditLog: true } }
           }
         ];
@@ -338,6 +420,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         name: editingOrg.name,
         email: editingOrg.email,
         expiryDate: editingOrg.expiryDate,
+        contractNumber: editingOrg.contractNumber,
+        contractDate: editingOrg.contractDate,
         debugEnabled: editingOrg.debugEnabled
       });
       
@@ -372,13 +456,23 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
     setSaving(true);
     try {
+      // Generate Contract Number
+      const orgCount = organizations.length;
+      const date = new Date();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      const contractNumber = `${orgCount + 1}-${month}/${year}`;
+      const contractDate = date.toISOString();
+
       const orgToCreate = {
         id: newOrg.id,
         name: newOrg.name,
         email: newOrg.email,
         ownerId: newOrg.ownerId,
         plan: newOrg.plan || PlanType.FREE,
-        status: newOrg.status || 'active'
+        status: newOrg.status || 'active',
+        contractNumber,
+        contractDate
       } as Organization;
 
       await db.createOrganization(orgToCreate);
@@ -574,6 +668,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     { id: 'app_diagnostics', name: 'Функции', icon: Activity },
     { id: 'system', name: 'Система', icon: ShieldCheck },
     { id: 'support', name: 'Поддержка', icon: MessageSquare, badge: unreadSupportMessages },
+    { id: 'invoices', name: 'Счета', icon: History },
     { id: 'requisites', name: 'Реквизиты', icon: FileText },
     { id: 'instructions', name: 'Инструкция', icon: HelpCircle },
   ] as const;
@@ -606,7 +701,7 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           </button>
         </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-2">
+        <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto custom-scrollbar">
           {menuItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -629,25 +724,31 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               </button>
             );
           })}
-        </nav>
 
-        <div className="p-4 border-t border-slate-800">
-          <button
-            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-            className="w-full flex items-center justify-center p-3 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all"
-            title={isSidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню'}
-          >
-            {isSidebarCollapsed ? <LayoutGrid className="w-5 h-5" /> : <div className="flex items-center gap-2"><LayoutGrid className="w-5 h-5" /><span>Свернуть</span></div>}
-          </button>
-          <button 
-            onClick={onLogout}
-            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} gap-3 px-4 py-3 text-rose-400 hover:bg-rose-900/20 rounded-xl transition-all mt-2`}
-            title={isSidebarCollapsed ? 'Выйти' : undefined}
-          >
-            <X className="w-5 h-5" />
-            {!isSidebarCollapsed && <span className="font-medium text-sm">Выйти</span>}
-          </button>
-        </div>
+          <div className="pt-4 mt-4 border-t border-slate-800 space-y-2">
+            <button
+              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+              className={`hidden md:flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} gap-3 px-4 py-3 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-white transition-all group`}
+              title={isSidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню'}
+            >
+              {isSidebarCollapsed ? (
+                <PanelLeftOpen className="w-5 h-5 shrink-0 stroke-2 group-hover:scale-110 transition-transform" />
+              ) : (
+                <PanelLeftClose className="w-5 h-5 shrink-0 stroke-2 group-hover:scale-110 transition-transform" />
+              )}
+              {!isSidebarCollapsed && <span className="font-medium text-sm">Свернуть меню</span>}
+            </button>
+
+            <button 
+              onClick={onLogout}
+              className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} gap-3 px-4 py-3 text-rose-400 hover:bg-rose-900/20 rounded-xl transition-all`}
+              title={isSidebarCollapsed ? 'Выйти' : undefined}
+            >
+              <LogOut className="w-5 h-5 shrink-0" />
+              {!isSidebarCollapsed && <span className="font-medium text-sm">Выйти</span>}
+            </button>
+          </div>
+        </nav>
       </aside>
 
       {/* Main Content */}
@@ -750,7 +851,8 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Статус</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Пользователи</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Создан</th>
-                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Счёт</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Договор</th>
+                      <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Срок окончания</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">ID</th>
                       <th className="px-6 py-4 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Действия</th>
                     </tr>
@@ -822,12 +924,27 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                             </div>
                           </td>
                           <td className="px-6 py-4">
-                            {org.invoiceRequested ? (
-                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                                Запрошен
-                              </span>
-                            ) : (
-                              <span className="text-xs text-slate-400">—</span>
+                            <div className="flex flex-col">
+                              <div className="text-xs font-bold text-slate-900 dark:text-slate-50">
+                                {org.contractNumber || '—'}
+                              </div>
+                              <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                                {org.contractDate ? new Date(org.contractDate).toLocaleDateString() : ''}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className={`text-xs font-bold ${
+                              org.expiryDate && new Date(org.expiryDate) < new Date() 
+                                ? 'text-rose-600 dark:text-rose-400' 
+                                : 'text-slate-600 dark:text-slate-300'
+                            }`}>
+                              {org.expiryDate ? new Date(org.expiryDate).toLocaleDateString() : 'Бессрочно'}
+                            </div>
+                            {org.invoiceRequested && (
+                              <div className="text-[8px] font-black text-amber-600 uppercase tracking-tighter mt-1">
+                                Запрошен счёт
+                              </div>
                             )}
                           </td>
                           <td className="px-6 py-4">
@@ -905,11 +1022,114 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         ) : activeTab === 'support' ? (
           <div className="max-w-2xl mx-auto animate-fadeIn">
             <SupportChat 
-              currentUser={{ id: 'admin', name: 'Супер-Админ', role: UserRole.SUPER_ADMIN } as any} 
-              orgId="all" 
+              currentUser={currentUser} 
+              orgId="admin" 
               onOrgSelect={(orgId) => onResetUnread && onResetUnread(orgId)}
               unreadByOrg={unreadByOrg}
             />
+          </div>
+        ) : activeTab === 'invoices' ? (
+          <div className="space-y-6 animate-fadeIn">
+            <div className="flex justify-between items-center">
+              <h3 className="text-xl font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight">Выставленные счета</h3>
+              <button 
+                onClick={fetchInvoices}
+                className="p-2 text-slate-400 hover:text-blue-600 transition-colors"
+                title="Обновить"
+              >
+                <RefreshCw className={`w-5 h-5 ${loadingInvoices ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-md dark:shadow-slate-900/20 border border-slate-200 dark:border-slate-800 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
+                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">№ Счета / Дата</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Организация</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Вид оплаты</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Тариф / Срок</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Сумма</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Статус</th>
+                      <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {loadingInvoices ? (
+                      <tr>
+                        <td colSpan={6} className="px-6 py-12 text-center text-slate-400 font-bold italic">Загрузка счетов...</td>
+                      </tr>
+                    ) : invoices.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-6 py-12 text-center text-slate-400 font-bold italic">Счетов пока нет</td>
+                      </tr>
+                    ) : (
+                      invoices.map((invoice) => (
+                        <tr key={invoice.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
+                          <td className="px-6 py-4">
+                            <div className="font-bold text-slate-900 dark:text-slate-50 text-sm">{invoice.contractNumber}</div>
+                            <div className="text-[10px] text-slate-400 font-medium">{invoice.date}</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm font-bold text-slate-700 dark:text-slate-200">
+                              {organizations.find(o => o.id === invoice.organizationId)?.name || invoice.organizationId}
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono">{invoice.organizationId}</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              {invoice.paymentMethod === 'cash' ? (
+                                <div className="flex items-center gap-1.5 text-amber-600 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-lg border border-amber-100 dark:border-amber-800">
+                                  <Coins className="w-3 h-3" />
+                                  <span className="text-[9px] font-black uppercase">Наличные</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1.5 text-blue-600 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded-lg border border-blue-100 dark:border-blue-800">
+                                  <FileText className="w-3 h-3" />
+                                  <span className="text-[9px] font-black uppercase">Безнал</span>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-xs font-bold text-slate-700 dark:text-slate-200">{invoice.planType}</div>
+                            <div className="text-[10px] text-slate-400">{invoice.termMonths} мес.</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm font-black text-slate-900 dark:text-slate-50">{invoice.amount.toLocaleString()} ₽</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <select 
+                              value={invoice.status}
+                              onChange={(e) => handleUpdateInvoiceStatus(invoice.id, e.target.value as any)}
+                              className={`text-[10px] font-black uppercase px-2 py-1 rounded-lg border-2 outline-none transition-all ${
+                                invoice.status === 'paid' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' :
+                                invoice.status === 'cancelled' ? 'bg-rose-50 border-rose-100 text-rose-600' :
+                                'bg-amber-50 border-amber-100 text-amber-600'
+                              }`}
+                            >
+                              <option value="pending">Ожидает</option>
+                              <option value="paid">Оплачен</option>
+                              <option value="cancelled">Отменен</option>
+                            </select>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <button 
+                              onClick={() => handleDeleteInvoice(invoice.id)}
+                              className="p-2 text-slate-400 hover:text-rose-600 transition-colors rounded-lg hover:bg-rose-50"
+                              title="Удалить счет"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         ) : activeTab === 'requisites' ? (
           <div className="max-w-4xl mx-auto animate-fadeIn">
@@ -964,6 +1184,59 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     Этот PIN работает как "Мастер-ключ" для входа под любым пользователем с ролью Администратор (id='admin').
                   </p>
                 </div>
+
+                <div className="pt-6 border-t border-slate-100 dark:border-slate-800">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-sm font-black text-slate-900 dark:text-slate-50 uppercase tracking-widest flex items-center gap-2">
+                       <Globe className="w-4 h-4 text-indigo-600" />
+                       Прокси и Сеть
+                    </h4>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-blue-100 dark:bg-blue-900/10 rounded-lg">
+                          <Database className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Прокси для Supabase</p>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400">Маршрутизация запросов к БД через основной сервер для обхода блокировок</p>
+                        </div>
+                      </div>
+                      <div className="relative inline-flex h-6 w-11 items-center rounded-full bg-slate-200 dark:bg-slate-700 transition-colors focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2">
+                        <input
+                          type="checkbox"
+                          checked={useSupabaseProxy}
+                          onChange={(e) => setUseSupabaseProxy(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className={`absolute left-1 h-4 w-4 rounded-full bg-white transition-transform ${useSupabaseProxy ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </div>
+                    </label>
+
+                    <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-2xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-sky-100 dark:bg-sky-900/10 rounded-lg">
+                          <Send className="w-5 h-5 text-sky-600" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-900 dark:text-slate-50">Прокси для Telegram</p>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400">Использование прокси-сервера для API telegram.org</p>
+                        </div>
+                      </div>
+                      <div className="relative inline-flex h-6 w-11 items-center rounded-full bg-slate-200 dark:bg-slate-700 transition-colors focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2">
+                        <input
+                          type="checkbox"
+                          checked={useTelegramProxy}
+                          onChange={(e) => setUseTelegramProxy(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className={`absolute left-1 h-4 w-4 rounded-full bg-white transition-transform ${useTelegramProxy ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </div>
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -989,6 +1262,10 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     <div className="flex items-baseline gap-1">
                       <span className="text-3xl font-black">{plan.price.toLocaleString()}</span>
                       <span className="text-sm opacity-80">₽ / мес</span>
+                    </div>
+                    <div className="mt-2 flex flex-col gap-1 opacity-80 text-[10px] font-bold uppercase tracking-wider">
+                      <div>+1 станок: {plan.machinePrice} ₽</div>
+                      <div>+1 сотрудник: {plan.userPrice} ₽</div>
                     </div>
                   </div>
 
@@ -1162,12 +1439,12 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
         ) : activeTab === 'diagnostics' ? (
           <div className="space-y-8 animate-fadeIn">
             <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
-              <div className="flex justify-between items-center mb-8">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
                 <div>
                   <h3 className="text-xl font-bold text-slate-900 dark:text-slate-50">Диагностика Supabase</h3>
                   <p className="text-sm text-slate-500 dark:text-slate-400">Проверка подключения и целостности таблиц</p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
                   <button 
                     onClick={() => {
                       const errors: string[] = [];
@@ -1636,6 +1913,27 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Цена за доп. станок (₽)</label>
+                  <input 
+                    type="number"
+                    value={editingPlan.machinePrice}
+                    onChange={(e) => setEditingPlan({...editingPlan, machinePrice: parseInt(e.target.value)})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Цена за доп. сотрудника (₽)</label>
+                  <input 
+                    type="number"
+                    value={editingPlan.userPrice}
+                    onChange={(e) => setEditingPlan({...editingPlan, userPrice: parseInt(e.target.value)})}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
                   <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Макс. сотрудников</label>
                   <input 
                     type="number"
@@ -2025,6 +2323,27 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">№ Договора</label>
+                    <input 
+                      type="text"
+                      value={editingOrg.contractNumber || ''}
+                      onChange={(e) => setEditingOrg({...editingOrg, contractNumber: e.target.value})}
+                      className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Дата договора</label>
+                    <input 
+                      type="date"
+                      value={editingOrg.contractDate ? editingOrg.contractDate.split('T')[0] : ''}
+                      onChange={(e) => setEditingOrg({...editingOrg, contractDate: e.target.value ? new Date(e.target.value).toISOString() : undefined})}
+                      className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Дата истечения (Expiry Date)</label>
                   <div className="flex gap-2">
@@ -2309,6 +2628,35 @@ const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/40 shadow-indigo-100 dark:shadow-indigo-900/20 hover:bg-indigo-700 transition-all disabled:opacity-50"
               >
                 {saving ? '...' : 'Подтвердить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Invoice Delete Confirmation Modal */}
+      {invoiceToDelete && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl dark:shadow-slate-900/40 w-full max-w-sm overflow-hidden border border-slate-200 dark:border-slate-800 p-8 text-center">
+            <div className="w-16 h-16 bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 rounded-2xl flex items-center justify-center mx-auto mb-6">
+              <Trash2 className="w-8 h-8" />
+            </div>
+            <h3 className="text-xl font-black text-slate-900 dark:text-slate-50 uppercase tracking-tight mb-2">Удаление счета</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-8">
+              Вы уверены, что хотите безвозвратно удалить этот счет? Это действие нельзя отменить.
+            </p>
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setInvoiceToDelete(null)}
+                className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+              >
+                Отмена
+              </button>
+              <button 
+                onClick={confirmDeleteInvoice}
+                className="flex-1 py-4 bg-rose-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/40 shadow-rose-100 dark:shadow-rose-900/20 hover:bg-rose-700 transition-all"
+              >
+                Удалить
               </button>
             </div>
           </div>

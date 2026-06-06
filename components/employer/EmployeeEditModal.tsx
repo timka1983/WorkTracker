@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { getTelegramUrl } from '../../lib/telegram';
 import { User, PositionConfig, PlanLimits, PayrollConfig, Machine, Branch, WorkLog, EntryType } from '../../types';
 import { DEFAULT_PAYROLL_CONFIG } from '../../constants';
 import { Trash2 } from 'lucide-react';
@@ -141,6 +142,17 @@ export const EmployeeEditModal: React.FC<EmployeeEditModalProps> = ({
                        </label>
                     </div>
                  </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Номер телефона</label>
+                <input 
+                  type="tel" 
+                  placeholder="+7 (999) 000-00-00"
+                  value={editingEmployee.phone || ''} 
+                  onChange={e => setEditingEmployee({...editingEmployee, phone: e.target.value})} 
+                  className="w-full border-2 border-slate-100 dark:border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold bg-white dark:bg-slate-900 dark:text-slate-100 shadow-sm dark:shadow-none" 
+                />
               </div>
 
               {canUsePayroll && (
@@ -300,8 +312,12 @@ export const EmployeeEditModal: React.FC<EmployeeEditModalProps> = ({
                         <button
                           type="button"
                           onClick={async () => {
+                            if (!telegramSettings?.enabled) {
+                              alert('TelegramAPI отключен в настройках организации.');
+                              return;
+                            }
                             try {
-                              const res = await fetch(`https://api.telegram.org/bot${telegramSettings.botToken}/getUpdates`);
+                              const res = await fetch(getTelegramUrl(telegramSettings.botToken, 'getUpdates'));
                               const data = await res.json();
                               if (data.ok && data.result.length > 0) {
                                 const lastMsg = data.result[data.result.length - 1];
@@ -342,20 +358,28 @@ export const EmployeeEditModal: React.FC<EmployeeEditModalProps> = ({
                         <button
                           type="button"
                           onClick={async () => {
+                            if (!telegramSettings?.enabled) {
+                              alert('TelegramAPI отключен в настройках организации.');
+                              return;
+                            }
                             try {
-                              const res = await fetch(`https://api.telegram.org/bot${telegramSettings.botToken}/sendMessage`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  chat_id: editingEmployee.telegramChatId,
-                                  text: `👋 Привет, ${editingEmployee.name}! Это тестовое уведомление от WorkTracker Pro.`
-                                })
-                              });
-                              const data = await res.json();
-                              if (data.ok) alert('Тестовое сообщение отправлено!');
-                              else alert('Ошибка: ' + data.description);
-                            } catch (e) {
-                              alert('Ошибка при отправке: ' + (e as any).message);
+                              const res = await fetch(getTelegramUrl(telegramSettings.botToken, 'sendMessage'), {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                chat_id: editingEmployee.telegramChatId,
+                                text: `👋 Привет, ${editingEmployee.name}! Это тестовое уведомление от WorkTracker Pro.`
+                              })
+                            });
+                            const data = await res.json();
+                            if (data.ok) alert('Тестовое сообщение отправлено!');
+                            else alert('Ошибка: ' + (data.description || 'неизвестная ошибка'));
+                            } catch (e: any) {
+                              if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
+                                alert('Ошибка сети: Не удалось связаться с Telegram. Проверьте интернет-соединение или отключите блокировщик рекламы.');
+                              } else {
+                                alert('Ошибка при отправке: ' + e.message);
+                              }
                             }
                           }}
                           className="text-[9px] font-bold text-amber-700 underline hover:text-amber-900"
@@ -408,6 +432,21 @@ export const EmployeeEditModal: React.FC<EmployeeEditModalProps> = ({
                         </div>
                       </div>
                     )}
+                 </div>
+                 
+                 <div className="pt-3 border-t border-amber-200/50 dark:border-amber-900/30">
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <div className="relative flex items-center">
+                        <input 
+                          type="checkbox" 
+                          checked={editingEmployee.isChatAdmin || false}
+                          onChange={e => setEditingEmployee({ ...editingEmployee, isChatAdmin: e.target.checked })}
+                          className="w-5 h-5 rounded border-amber-300 dark:border-amber-700 text-amber-600 dark:text-amber-400 focus:ring-amber-500 cursor-pointer bg-white dark:bg-slate-900"
+                        />
+                      </div>
+                      <span className="text-[10px] font-bold text-amber-800 dark:text-amber-500 group-hover:text-amber-900 dark:group-hover:text-amber-400 transition-colors uppercase tracking-tight">Администратор чата</span>
+                    </label>
+                    <p className="text-[9px] text-amber-600 dark:text-amber-400/70 mt-1 pl-8">Ответственное лицо, назначенное работодателем для модерации чата.</p>
                  </div>
 
                  <button 

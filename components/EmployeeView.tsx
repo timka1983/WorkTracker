@@ -1,11 +1,12 @@
 
 import React, { useState, useEffect, useMemo, useRef, memo } from 'react';
-import { WorkLog, User, EntryType, Machine, PositionConfig, PlanLimits, Organization, PayrollPeriod, PayrollStatus, PayrollPayment, LocationSettings } from '../types';
+import { WorkLog, User, EntryType, Machine, PositionConfig, PlanLimits, Organization, PayrollPeriod, PayrollStatus, PayrollPayment, LocationSettings, PayrollSnapshot } from '../types';
 import { formatTime, formatDate, formatDuration, calculateMinutes, getDaysInMonthArray, formatDurationShort, sendNotification, calculateDistance, sendTelegramNotification, applyRounding, getEffectivePayrollConfig, calculateMonthlyPayroll } from '../utils';
 import { STORAGE_KEYS, DEFAULT_PERMISSIONS } from '../constants';
 import { format, isAfter, endOfMonth, eachDayOfInterval, getDay, addMonths, startOfDay, startOfMonth, subMonths } from 'date-fns';
 import { ru } from 'date-fns/locale/ru';
 import { db } from '../lib/supabase';
+import { SystemLogger } from '../lib/logger';
 import { X, CreditCard, History, Info, TrendingUp, TrendingDown } from 'lucide-react';
 import { EmployeeHeader } from './employee/EmployeeHeader';
 import { ShiftControl } from './employee/ShiftControl';
@@ -17,6 +18,87 @@ import { TodaySessions } from './employee/TodaySessions';
 import { AbsenceControls } from './employee/AbsenceControls';
 import { CameraModal } from './employee/CameraModal';
 import { ShiftMonitor } from './ShiftMonitor';
+
+import { EmployeeChat } from './employee/EmployeeChat';
+
+// ─── Geo утилиты ─────────────────────────────────────────────────────────────
+
+const GEO_OPTIONS: PositionOptions = {
+  enableHighAccuracy: true,
+  timeout: 15000,
+  maximumAge: 30000,
+};
+
+const GEO_MAX_ACCURACY_METERS = 100;
+const GEO_RETRY_DELAY_MS = 2000;
+const GEO_MAX_ATTEMPTS = 3;
+
+async function getAccuratePosition(): Promise<GeolocationPosition> {
+  if (!('geolocation' in navigator)) {
+    throw new Error('Geolocation API недоступен в этом браузере.');
+  }
+
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= GEO_MAX_ATTEMPTS; attempt++) {
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, GEO_OPTIONS);
+      });
+
+      const isLastAttempt = attempt === GEO_MAX_ATTEMPTS;
+      const isAccurate = position.coords.accuracy <= GEO_MAX_ACCURACY_METERS;
+
+      if (isAccurate || isLastAttempt) {
+        return position;
+      }
+
+      console.warn(
+        `[Geo] Попытка ${attempt}/${GEO_MAX_ATTEMPTS}: точность ${Math.round(position.coords.accuracy)}м > ${GEO_MAX_ACCURACY_METERS}м. Повтор через ${GEO_RETRY_DELAY_MS}мс.`
+      );
+      await new Promise(r => setTimeout(r, GEO_RETRY_DELAY_MS));
+
+    } catch (err) {
+      lastError = err;
+      const geoErr = err as GeolocationPositionError;
+
+      if (geoErr?.code === 1) throw err; // PERMISSION_DENIED — retry бесполезен
+
+      if (attempt < GEO_MAX_ATTEMPTS) {
+        console.warn(`[Geo] Попытка ${attempt}/${GEO_MAX_ATTEMPTS} не удалась (code=${geoErr?.code}). Повтор...`);
+        await new Promise(r => setTimeout(r, GEO_RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Не удалось получить геопозицию.');
+}
+
+function geoErrorMessage(err: unknown): string {
+  const code = (err as GeolocationPositionError)?.code;
+  if (code === 1) {
+    return (
+      'Доступ к геолокации запрещён.\n\n' +
+      'Разрешите доступ в настройках браузера:\n' +
+      'Настройки → Конфиденциальность → Разрешения → Местоположение'
+    );
+  }
+  if (code === 2) {
+    return (
+      'Не удалось определить местоположение.\n\n' +
+      'Убедитесь, что GPS включён, и попробуйте выйти на открытое место.'
+    );
+  }
+  if (code === 3) {
+    return (
+      'Время ожидания геолокации истекло.\n\n' +
+      'Слабый сигнал GPS. Попробуйте ещё раз или выйдите на улицу.'
+    );
+  }
+  return 'Неизвестная ошибка геолокации. Попробуйте ещё раз.';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface EmployeeViewProps {
   user: User;
@@ -39,6 +121,7 @@ interface EmployeeViewProps {
   viewMode: 'control' | 'matrix';
   setViewMode: (mode: 'control' | 'matrix') => void;
   payments?: PayrollPayment[];
+  users: User[];
 }
 
 const BIRTHDAY_GREETINGS = [
@@ -60,7 +143,7 @@ const BIRTHDAY_GREETINGS = [
 ];
 
 const EmployeeView: React.FC<EmployeeViewProps> = ({ 
-  user, logs, logsLookup = {}, onLogsUpsert, activeShifts, activeShiftsMap = {}, onActiveShiftsUpdate, onOvertime, machines, positions, onUpdateUser, nightShiftBonusMinutes, onRefresh, planLimits, currentOrg, onMonthChange, getNow, viewMode, setViewMode, payments = []
+  user, logs, logsLookup = {}, onLogsUpsert, activeShifts, activeShiftsMap = {}, onActiveShiftsUpdate, onOvertime, machines, positions, onUpdateUser, nightShiftBonusMinutes, onRefresh, planLimits, currentOrg, onMonthChange, getNow, viewMode, setViewMode, payments = [], users
 }) => {
   const orgId = localStorage.getItem(STORAGE_KEYS.ORG_ID) || 'default_org';
 
@@ -70,18 +153,13 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
   }, [user.position, positions]);
 
   const filteredMachines = useMemo(() => {
-    const isOverridden = user.payroll?.overrides?.machineRates || false;
-    const effectiveMachineRates = isOverridden 
-      ? (user.payroll?.machineRates || {}) 
-      : (positions.find(p => p.name === user.position)?.payroll?.machineRates || {});
-    
-    const assignedMachineIds = Object.keys(effectiveMachineRates);
-    if (assignedMachineIds.length === 0) return machines;
-    return machines.filter(m => assignedMachineIds.includes(m.id));
-  }, [machines, user.payroll, user.position, positions]);
+    return machines; // Always show full list of machines
+  }, [machines]);
 
   const [overtimeAlerts, setOvertimeAlerts] = useState<Record<number, boolean>>({});
+  const overtimeAlertsRef = useRef<Record<number, boolean>>({});
   const [overdueStages, setOverdueStages] = useState<Record<number, { stage: number, lastCheck: number }>>({});
+  const overdueStagesRef = useRef<Record<number, { stage: number, lastCheck: number }>>({});
 
   const checkGeoZone = (coords: GeolocationCoordinates, locationSettings?: LocationSettings) => {
     if (!locationSettings || !locationSettings.enabled) return true;
@@ -91,11 +169,12 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
 
   useEffect(() => {
     const checkOvertime = async () => {
-      if (!perms.maxShiftDurationMinutes || !planLimits.features.advancedAnalytics) return; 
+      if (!perms.maxShiftDurationMinutes || !planLimits.features.advancedAnalytics) return;
 
       const now = getNow();
-      const updatedAlerts = { ...overtimeAlerts };
-      const updatedOverdueStages = { ...overdueStages };
+      // Читаем из ref — не создаём стейт-зависимость, нет бесконечного цикла
+      const updatedAlerts = { ...overtimeAlertsRef.current };
+      const updatedOverdueStages = { ...overdueStagesRef.current };
       let changed = false;
 
       for (const [slotStr, shift] of Object.entries(activeShifts)) {
@@ -104,10 +183,13 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
           const duration = calculateMinutes(shift.checkIn, now.toISOString());
           const limit = perms.maxShiftDurationMinutes!;
           const autoShift = currentOrg?.autoShiftCompletion;
-          const firstInterval = autoShift?.enabled ? autoShift.firstAlertMinutes : 14;
+          const firstInterval = autoShift?.enabled ? autoShift.firstAlertMinutes : 15;
           const secondInterval = autoShift?.enabled ? autoShift.secondAlertMinutes : 5;
           const thirdInterval = autoShift?.enabled ? autoShift.thirdAlertMinutes : 5;
           const limitWithBuffer = limit + firstInterval;
+          // Исправлено: было limit * 60000 — смена закрывалась раньше буфера.
+          // Теперь forceEndTime совпадает с моментом первого алерта.
+          const forceEndTime = new Date(new Date(shift.checkIn).getTime() + limitWithBuffer * 60000).toISOString();
           
           if (duration > limitWithBuffer) {
             if (!updatedOverdueStages[slot]) {
@@ -115,42 +197,99 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
               updatedOverdueStages[slot] = { stage: 1, lastCheck: now.getTime() };
               changed = true;
               
-              // Check Geo
-              try {
-                const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-                  navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
-                });
-                
-                const isInZone = checkGeoZone(position.coords, currentOrg?.locationSettings);
-                
-                if (!isInZone) {
-                  handleForceClose(shift.id, now.toISOString());
-                } else {
-                  sendNotification('Смена не завершена', `Вы работаете уже более ${Math.floor(limitWithBuffer / 60)} часов. Не забудьте завершить смену!`);
+              if (currentOrg?.locationSettings?.enabled) {
+                try {
+                  const position = await getAccuratePosition();
+                  const isInZone = checkGeoZone(position.coords, currentOrg.locationSettings);
+
+                  if (!isInZone) {
+                    sendNotification(
+                      'Смена не завершена',
+                      'Вы вышли за пределы рабочей зоны. Смена будет завершена автоматически.'
+                    );
+                    handleForceClose(shift.id, forceEndTime);
+                    delete updatedOverdueStages[slot];
+                  } else {
+                    sendNotification(
+                      'Смена не завершена',
+                      `Вы работаете уже более ${Math.floor(limitWithBuffer / 60)} часов. Не забудьте завершить смену!`
+                    );
+                  }
+                } catch (err) {
+                  // Stage 1: geo-ошибка ≠ выход из зоны — только уведомляем
+                  console.error('Geo error (stage 1):', err);
+                  const code = (err as GeolocationPositionError)?.code;
+                  sendNotification(
+                    'Смена не завершена',
+                    code === 1
+                      ? `Вы работаете уже более ${Math.floor(limitWithBuffer / 60)} ч. Геолокация недоступна — проверьте разрешения.`
+                      : `Вы работаете уже более ${Math.floor(limitWithBuffer / 60)} ч. Не забудьте завершить смену!`
+                  );
                 }
-              } catch (e) {
-                console.error("Geo error:", e);
+              } else {
+                sendNotification(
+                  'Смена не завершена',
+                  `Вы работаете уже более ${Math.floor(limitWithBuffer / 60)} часов. Не забудьте завершить смену!`
+                );
               }
             } else if (updatedOverdueStages[slot].stage === 1 && now.getTime() - updatedOverdueStages[slot].lastCheck > secondInterval * 60 * 1000) {
               // Stage 2: secondInterval later
               updatedOverdueStages[slot] = { stage: 2, lastCheck: now.getTime() };
               changed = true;
-              // Check Geo again
-              try {
-                const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-                  navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
-                });
-                const isInZone = checkGeoZone(position.coords, currentOrg?.locationSettings);
-                if (!isInZone) {
-                  handleForceClose(shift.id, now.toISOString());
-                  delete updatedOverdueStages[slot];
+
+              if (currentOrg?.locationSettings?.enabled) {
+                try {
+                  const position = await getAccuratePosition();
+                  const isInZone = checkGeoZone(position.coords, currentOrg.locationSettings);
+
+                  if (!isInZone) {
+                    sendNotification(
+                      'Автоматическое завершение смены',
+                      'Вы находитесь вне рабочей зоны. Смена завершена автоматически.'
+                    );
+                    handleForceClose(shift.id, forceEndTime);
+                    delete updatedOverdueStages[slot];
+                  } else {
+                    sendNotification(
+                      'Смена не завершена',
+                      `Смена длится более ${Math.floor((limitWithBuffer + secondInterval) / 60)} ч. Пожалуйста, завершите её вручную.`
+                    );
+                  }
+                } catch (err) {
+                  console.error('Geo error (stage 2):', err);
+                  const code = (err as GeolocationPositionError)?.code;
+                  // PERMISSION_DENIED — сотрудник не разрешил браузер, не форс-закрываем
+                  if (autoShift?.enabled && code !== 1) {
+                    sendNotification(
+                      'Автоматическое завершение смены',
+                      'Геолокация недоступна. Смена завершена автоматически по истечении лимита.'
+                    );
+                    handleForceClose(shift.id, forceEndTime);
+                    delete updatedOverdueStages[slot];
+                  } else {
+                    sendNotification(
+                      'Смена не завершена',
+                      'Превышен лимит времени смены. Пожалуйста, завершите смену вручную.'
+                    );
+                  }
                 }
-              } catch (e) {
-                console.error("Geo error:", e);
+              } else if (autoShift?.enabled) {
+                sendNotification(
+                  'Автоматическое завершение смены',
+                  'Превышен лимит времени. Смена завершена автоматически.'
+                );
+                handleForceClose(shift.id, forceEndTime);
+                delete updatedOverdueStages[slot];
               }
             } else if (updatedOverdueStages[slot].stage === 2 && now.getTime() - updatedOverdueStages[slot].lastCheck > thirdInterval * 60 * 1000) {
-              // Stage 3: thirdInterval later
-              handleForceClose(shift.id, now.toISOString());
+              // Stage 3: thirdInterval later — финальный форс без geo-проверки
+              if (autoShift?.enabled) {
+                sendNotification(
+                  'Автоматическое завершение смены',
+                  'Превышен лимит времени. Смена завершена автоматически.'
+                );
+                handleForceClose(shift.id, forceEndTime);
+              }
               delete updatedOverdueStages[slot];
               changed = true;
             }
@@ -162,6 +301,8 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
       }
 
       if (changed) {
+        overdueStagesRef.current = updatedOverdueStages;
+        overtimeAlertsRef.current = updatedAlerts;
         setOverdueStages(updatedOverdueStages);
         setOvertimeAlerts(updatedAlerts);
       }
@@ -170,10 +311,24 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     const interval = setInterval(checkOvertime, 60000);
     checkOvertime();
     return () => clearInterval(interval);
-  }, [activeShifts, perms.maxShiftDurationMinutes, overtimeAlerts, planLimits, user, onOvertime, getNow]);
+  // overtimeAlerts убран из deps — бесконечный ре-рендер устранён.
+  // Актуальное значение читается через overtimeAlertsRef.current.
+  }, [activeShifts, perms.maxShiftDurationMinutes, planLimits, user, onOvertime, getNow]);
 
   const [slotMachineIds, setSlotMachineIds] = useState<Record<number, string>>({ 1: '', 2: '', 3: '' });
   const [showPayrollModal, setShowPayrollModal] = useState(false);
+  const [showChatModal, setShowChatModal] = useState(false);
+
+  useEffect(() => {
+    (window as any).isEmployeeChatOpen = showChatModal;
+    return () => { (window as any).isEmployeeChatOpen = false; };
+  }, [showChatModal]);
+
+  useEffect(() => {
+    const handleOpenChat = () => setShowChatModal(true);
+    window.addEventListener('open-employee-chat', handleOpenChat);
+    return () => window.removeEventListener('open-employee-chat', handleOpenChat);
+  }, []);
 
   // Синхронизируем выбранные ID машин при загрузке списка оборудования
   useEffect(() => {
@@ -209,6 +364,8 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
   const [filterMonth, setFilterMonth] = useState(new Date().toISOString().substring(0, 7));
   
   const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod | null>(null);
+  const [allSnapshots, setAllSnapshots] = useState<PayrollSnapshot[]>([]);
+  const [allPayments, setAllPayments] = useState<PayrollPayment[]>([]);
 
   useEffect(() => {
     const fetchPeriod = async () => {
@@ -218,6 +375,16 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     };
     fetchPeriod();
   }, [currentOrg, filterMonth]);
+
+  useEffect(() => {
+    const fetchAllPayroll = async () => {
+      if (!currentOrg) return;
+      const data = await db.getAllPayrollData(currentOrg.id);
+      setAllSnapshots(data.snapshots);
+      setAllPayments(data.payments);
+    };
+    fetchAllPayroll();
+  }, [currentOrg]);
 
   const isPaid = payrollPeriod?.status === PayrollStatus.PAID;
 
@@ -307,6 +474,21 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     });
   }, [logs, user.id, todayStr]);
 
+  // Self-healing: if logs show an active shift but the map doesn't, try to recover it
+  useEffect(() => {
+    if (!orgId || !user.id || !onActiveShiftsUpdate) return;
+    
+    const activeInMap = Object.values(activeShifts).some(s => s !== null);
+    if (!activeInMap) {
+      const activeInLogs = logs.find(l => l.userId === user.id && l.entryType === EntryType.WORK && !l.checkOut);
+      if (activeInLogs) {
+        console.log('🔄 Self-healing: active shift found in logs but missing in map. Recovering...');
+        // Slot selection logic: if single slot, use slot 1. 
+        onActiveShiftsUpdate({ 1: activeInLogs });
+      }
+    }
+  }, [logs, activeShifts, user.id, orgId, onActiveShiftsUpdate]);
+
   const isAnyShiftActiveInLogs = useMemo(() => {
     // Если разрешено несколько слотов, то наличие активной смены не блокирует начало новой в другом слоте
     if (perms.multiSlot > 0) return false;
@@ -343,8 +525,8 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     const canvas = document.createElement('canvas');
     const video = videoRef.current;
     
-    // Оптимизация размера: ограничиваем максимальное измерение до 800px
-    const MAX_DIMENSION = 800;
+    // Оптимизация размера: ограничиваем максимальное измерение для максимальной скорости загрузки
+    const MAX_DIMENSION = 480; // Снижено с 800px до 480px для быстрой отправки даже на 3G
     let width = video.videoWidth;
     let height = video.videoHeight;
 
@@ -365,8 +547,8 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     const ctx = canvas.getContext('2d');
     ctx?.drawImage(video, 0, 0, width, height);
     
-    // Качество 0.5 достаточно для фотофиксации и значительно уменьшает размер файла
-    return canvas.toDataURL('image/jpeg', 0.5);
+    // Качество 0.4 (40%) сохраняет читаемость лиц, но делает файл экстремально легким (обычно < 20-30 Кб)
+    return canvas.toDataURL('image/jpeg', 0.4);
   };
 
   const processAction = async (slot: number, type: 'start' | 'stop') => {
@@ -387,34 +569,41 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
         // Location Check
         let locationData = undefined;
         if (currentOrg?.locationSettings?.enabled) {
-           try {
-               const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-                   navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
-               });
-               
-               const dist = calculateDistance(
-                   currentOrg.locationSettings.latitude, 
-                   currentOrg.locationSettings.longitude, 
-                   position.coords.latitude, 
-                   position.coords.longitude
-               );
-               
-               if (dist > currentOrg.locationSettings.radius) {
-                   alert(`Вы находитесь вне рабочей зоны! Расстояние: ${Math.round(dist)}м. (Макс: ${currentOrg.locationSettings.radius}м)`);
-                   setIsProcessingAction(false);
-                   return;
-               }
-               
-               locationData = {
-                   latitude: position.coords.latitude,
-                   longitude: position.coords.longitude,
-                   accuracy: position.coords.accuracy
-               };
-           } catch (e) {
-               alert('Ошибка геолокации. Разрешите доступ к геопозиции для начала смены.');
-               setIsProcessingAction(false);
-               return;
-           }
+          try {
+            const position = await getAccuratePosition();
+
+            const dist = calculateDistance(
+              currentOrg.locationSettings.latitude,
+              currentOrg.locationSettings.longitude,
+              position.coords.latitude,
+              position.coords.longitude
+            );
+
+            if (dist > currentOrg.locationSettings.radius) {
+              const accuracyNote =
+                position.coords.accuracy > 50
+                  ? `\nТочность GPS: ±${Math.round(position.coords.accuracy)}м — попробуйте подождать улучшения сигнала.`
+                  : '';
+              alert(
+                `Вы находитесь вне рабочей зоны!\n` +
+                `Расстояние до точки: ${Math.round(dist)}м. (Макс: ${currentOrg.locationSettings.radius}м)` +
+                accuracyNote
+              );
+              setIsProcessingAction(false);
+              return;
+            }
+
+            locationData = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy,
+            };
+
+          } catch (err) {
+            alert(geoErrorMessage(err));
+            setIsProcessingAction(false);
+            return;
+          }
         }
 
         if (perms.useMachines) {
@@ -508,13 +697,21 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     };
     
     const nextShifts = { ...activeShifts, [slot]: newShift };
+    setIsProcessingAction(true);
     try {
-      await Promise.all([
-        onActiveShiftsUpdate(nextShifts),
-        onLogsUpsert([newShift])
-      ]);
-    } catch (e) {
+      // 1. First, try to sync both. If one fails, the mutation in useAppData will handle offline queue for logs.
+      // But activeShiftsMap should be updated locally first regardless.
+      await onActiveShiftsUpdate(nextShifts);
+      await onLogsUpsert([newShift]);
+      
+      SystemLogger.log('Shift', `Started shift ${newShift.id} for user ${user.id} at slot ${slot}`);
+    } catch (e: any) {
       console.error("Failed to sync start work:", e);
+      SystemLogger.log('Shift', 'Error starting shift', e);
+      // Even if server sync fails, the local state in AppData should have updated
+      // via optimistic UI in handlers, but we show a warning if it's a persistent error
+    } finally {
+      setIsProcessingAction(false);
     }
     setShowCamera(null);
 
@@ -525,12 +722,12 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
       
       // 1. Notify Admin (Organization Chat)
       if (currentOrg.telegramSettings.chatId && currentOrg.telegramSettings.notifyOnShiftStart !== false) {
-        sendTelegramNotification(currentOrg.telegramSettings.botToken, currentOrg.telegramSettings.chatId, msg);
+        sendTelegramNotification(currentOrg.telegramSettings.botToken, currentOrg.telegramSettings.chatId, msg, currentOrg?.telegramSettings?.enabled);
       }
 
       // 2. Notify Employee (Personal Chat)
       if (user.telegramChatId && (user.telegramSettings?.notifyOnShiftStart ?? true)) {
-        sendTelegramNotification(currentOrg.telegramSettings.botToken, user.telegramChatId, msg);
+        sendTelegramNotification(currentOrg.telegramSettings.botToken, user.telegramChatId, msg, currentOrg?.telegramSettings?.enabled);
       }
     }
   };
@@ -542,54 +739,172 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
     const isPiecework = getEffectivePayrollConfig(user, positions).type === 'piecework';
     
     if (isPiecework && items === undefined) {
+      setShowCamera(null);
       setShowPieceworkModal({ slot, photo });
       setItemsProduced('');
       return;
     }
     
     const now = getNow();
-    let duration = calculateMinutes(currentShift.checkIn!, now.toISOString());
+    let isNightShift = currentShift.isNightShift;
+    let overlapMinutes = 0;
     
-    if (currentShift.isNightShift && nightShiftBonusMinutes > 0) {
-      const bonus = Math.floor(duration * (nightShiftBonusMinutes / 100));
-      duration += bonus;
-    }
+    if (currentOrg?.autoNightShift) {
+      const startStr = currentOrg.nightShiftStart || '22:00';
+      const endStr = currentOrg.nightShiftEnd || '06:00';
+      
+      const start = new Date(currentShift.checkIn!).getTime();
+      const end = now.getTime();
 
-    const completed: WorkLog = { 
-      ...currentShift, 
-      checkOut: now.toISOString(), 
-      durationMinutes: Math.max(0, duration),
-      photoOut: photo,
-      itemsProduced: items
-    };
+      let overlapMs = 0;
+      const [startHr, startMin] = startStr.split(':').map(Number);
+      const [endHr, endMin] = endStr.split(':').map(Number);
+
+      let currentDay = new Date(start);
+      currentDay.setHours(12, 0, 0, 0); 
+      const endDay = new Date(end);
+      endDay.setHours(12, 0, 0, 0);
+
+      for (let d = new Date(currentDay.getTime() - 86400000); d.getTime() <= endDay.getTime() + 86400000; d = new Date(d.getTime() + 86400000)) {
+        const nightStart = new Date(d);
+        nightStart.setHours(startHr, startMin, 0, 0);
+
+        const nightEnd = new Date(d);
+        if (endHr < startHr || (endHr === startHr && endMin < startMin)) {
+          nightEnd.setDate(nightEnd.getDate() + 1);
+        }
+        nightEnd.setHours(endHr, endMin, 0, 0);
+
+        const overlapStart = Math.max(start, nightStart.getTime());
+        const overlapEnd = Math.min(end, nightEnd.getTime());
+
+        if (overlapEnd > overlapStart) {
+          overlapMs += (overlapEnd - overlapStart);
+        }
+      }
+
+      overlapMinutes = overlapMs / (1000 * 60);
+      isNightShift = overlapMinutes >= 60;
+    }
+    
+    const completedLogs: WorkLog[] = [];
+
+    if (currentOrg?.autoNightShift && overlapMinutes >= 60) {
+      let currentTime = new Date(currentShift.checkIn!).getTime();
+      const checkOutTime = now.getTime();
+
+      const startStr = currentOrg.nightShiftStart || '22:00';
+      const endStr = currentOrg.nightShiftEnd || '06:00';
+      const [startHr, startMin] = startStr.split(':').map(Number);
+      const [endHr, endMin] = endStr.split(':').map(Number);
+
+      const getNextBoundary = (timeMs: number) => {
+        const d = new Date(timeMs);
+        const candidates = [];
+        for (let offset = -1; offset <= 2; offset++) {
+          const c1 = new Date(d);
+          c1.setDate(c1.getDate() + offset);
+          c1.setHours(startHr, startMin, 0, 0);
+          candidates.push(c1.getTime());
+
+          const c2 = new Date(d);
+          c2.setDate(c2.getDate() + offset);
+          c2.setHours(endHr, endMin, 0, 0);
+          candidates.push(c2.getTime());
+        }
+        return candidates.filter(c => c > timeMs).sort((a, b) => a - b)[0];
+      };
+
+      const isTimeInNightWindow = (timeMs: number) => {
+        const d = new Date(timeMs);
+        const timeVal = d.getHours() * 60 + d.getMinutes();
+        const startVal = startHr * 60 + startMin;
+        const endVal = endHr * 60 + endMin;
+        if (startVal > endVal) {
+          return timeVal >= startVal || timeVal < endVal;
+        } else {
+          return timeVal >= startVal && timeVal < endVal;
+        }
+      };
+
+      let isFirstSegment = true;
+
+      while (currentTime < checkOutTime) {
+        const isNight = isTimeInNightWindow(currentTime);
+        const nextBoundary = getNextBoundary(currentTime);
+        const segmentEnd = Math.min(checkOutTime, nextBoundary);
+
+        let segDuration = calculateMinutes(new Date(currentTime).toISOString(), new Date(segmentEnd).toISOString());
+        let finalDuration = segDuration;
+
+        if (isNight && nightShiftBonusMinutes > 0) {
+          finalDuration += Math.floor(segDuration * (nightShiftBonusMinutes / 100));
+        }
+
+        const newId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+
+        completedLogs.push({
+          ...currentShift,
+          id: isFirstSegment ? currentShift.id : newId,
+          checkIn: new Date(currentTime).toISOString(),
+          checkOut: new Date(segmentEnd).toISOString(),
+          durationMinutes: Math.max(0, finalDuration),
+          isNightShift: isNight,
+          photoOut: segmentEnd === checkOutTime ? photo : undefined,
+          itemsProduced: segmentEnd === checkOutTime ? items : undefined
+        });
+
+        isFirstSegment = false;
+        currentTime = segmentEnd;
+      }
+    } else {
+      let duration = calculateMinutes(currentShift.checkIn!, now.toISOString());
+      if (isNightShift && nightShiftBonusMinutes > 0) {
+        const bonus = Math.floor(duration * (nightShiftBonusMinutes / 100));
+        duration += bonus;
+      }
+      completedLogs.push({ 
+        ...currentShift, 
+        checkOut: now.toISOString(), 
+        durationMinutes: Math.max(0, duration),
+        isNightShift,
+        photoOut: photo,
+        itemsProduced: items
+      });
+    }
     
     // Explicitly update active shifts first
     const nextShifts = { ...activeShifts, [slot]: null };
+    setIsProcessingAction(true);
     try {
-      await Promise.all([
-        onActiveShiftsUpdate(nextShifts),
-        onLogsUpsert([completed])
-      ]);
-    } catch (e) {
+      await onActiveShiftsUpdate(nextShifts);
+      await onLogsUpsert(completedLogs);
+      
+      SystemLogger.log('Shift', `Stopped shift ${currentShift.id} for user ${user.id} at slot ${slot}`);
+    } catch (e: any) {
       console.error("Failed to sync stop work:", e);
+      SystemLogger.log('Shift', 'Error stopping shift', e);
+    } finally {
+      setIsProcessingAction(false);
     }
     setShowCamera(null);
 
     // Telegram Notification
     if (currentOrg?.telegramSettings?.enabled && currentOrg.telegramSettings.botToken) {
       const machineName = currentShift.machineId ? getMachineName(currentShift.machineId) : 'Работа';
-      const durationFormatted = formatDuration(Math.max(0, duration));
+      const totalDuration = completedLogs.reduce((sum, log) => sum + log.durationMinutes, 0);
+      const durationFormatted = formatDuration(Math.max(0, totalDuration));
       const itemsText = items !== undefined ? `\n📦 Произведено: ${items} шт.` : '';
       const msg = `🔴 <b>Конец смены</b>\n👤 Сотрудник: ${user.name}\n📍 Позиция: ${user.position}\n🔧 Слот: ${slot} (${machineName})\n⏰ Время: ${formatTime(now.toISOString())}\n⏱ Длительность: ${durationFormatted}${itemsText}`;
       
       // 1. Notify Admin (Organization Chat)
       if (currentOrg.telegramSettings.chatId && currentOrg.telegramSettings.notifyOnShiftEnd !== false) {
-        sendTelegramNotification(currentOrg.telegramSettings.botToken, currentOrg.telegramSettings.chatId, msg);
+        sendTelegramNotification(currentOrg.telegramSettings.botToken, currentOrg.telegramSettings.chatId, msg, currentOrg?.telegramSettings?.enabled);
       }
 
       // 2. Notify Employee (Personal Chat)
       if (user.telegramChatId && (user.telegramSettings?.notifyOnShiftEnd ?? true)) {
-        sendTelegramNotification(currentOrg.telegramSettings.botToken, user.telegramChatId, msg);
+        sendTelegramNotification(currentOrg.telegramSettings.botToken, user.telegramChatId, msg, currentOrg?.telegramSettings?.enabled);
       }
     }
   };
@@ -819,11 +1134,11 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
       const msg = `⛔️ <b>Авто-закрытие смены</b>\n👤 Сотрудник: ${user.name}\n📍 Позиция: ${user.position}\n🔧 Слот: ${slot} (${machineName})\n⚠️ Причина: Превышен лимит времени или выход из гео-зоны`;
       
       // Notify Admin
-      sendTelegramNotification(currentOrg.telegramSettings.botToken, currentOrg.telegramSettings.chatId, msg);
+      sendTelegramNotification(currentOrg.telegramSettings.botToken, currentOrg.telegramSettings.chatId, msg, currentOrg?.telegramSettings?.enabled);
       
       // Notify Employee
       if (user.telegramChatId && (user.telegramSettings?.notifyOnLimitExceeded ?? true)) {
-         sendTelegramNotification(currentOrg.telegramSettings.botToken, user.telegramChatId, msg);
+         sendTelegramNotification(currentOrg.telegramSettings.botToken, user.telegramChatId, msg, currentOrg?.telegramSettings?.enabled);
       }
     }
   };
@@ -883,6 +1198,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
           organization={currentOrg}
           userPosition={positions.find(p => p.name === user.position) || null}
           onForceClose={handleForceClose}
+          getNow={getNow}
         />
       ))}
       {showPieceworkModal && (
@@ -1011,6 +1327,10 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
                 ? await handleStartWork(showCamera.slot, photoUrl || undefined, showCamera.location) 
                 : await handleStopWork(showCamera.slot, photoUrl || undefined);
             }
+          } catch (e) {
+            console.error('Camera capture error', e);
+            SystemLogger.log('Photo Capture', 'Failed to capture or upload photo', e);
+            alert('Произошла ошибка при загрузке фото. Попробуйте еще раз или обратитесь к администратору (проверьте права доступа).');
           } finally {
             setIsUploadingPhoto(false);
             setIsProcessingAction(false);
@@ -1031,6 +1351,24 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
         setViewMode={setViewMode}
         perms={perms}
       />
+
+      {showChatModal && (
+        <div className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-[2rem] w-full max-w-lg shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 overflow-hidden relative animate-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setShowChatModal(false)} 
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-900 dark:text-slate-50 text-2xl font-light transition-colors z-10 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center"
+            >
+              &times;
+            </button>
+            <EmployeeChat 
+              currentUser={user}
+              orgId={orgId}
+              users={users}
+            />
+          </div>
+        </div>
+      )}
 
       {planLimits.features.payroll && effectivePayroll && (
         <div 
@@ -1066,6 +1404,7 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
             getMachineName={getMachineName}
             isAnyShiftActiveInLogs={isAnyShiftActiveInLogs}
             isPaid={isPaid}
+            currentOrg={currentOrg}
           />
 
           <TodaySessions
@@ -1114,6 +1453,8 @@ const EmployeeView: React.FC<EmployeeViewProps> = ({
           monthEarnings={monthEarnings}
           payrollDetails={payrollDetails}
           payments={payments}
+          allSnapshots={allSnapshots}
+          allPayments={allPayments}
           filterMonth={filterMonth}
           onClose={() => setShowPayrollModal(false)}
         />
@@ -1127,12 +1468,14 @@ interface PayrollBreakdownModalProps {
   monthEarnings: number;
   payrollDetails: any;
   payments: PayrollPayment[];
+  allSnapshots: PayrollSnapshot[];
+  allPayments: PayrollPayment[];
   filterMonth: string;
   onClose: () => void;
 }
 
 const PayrollBreakdownModal: React.FC<PayrollBreakdownModalProps> = ({
-  user, monthEarnings, payrollDetails, payments, filterMonth, onClose
+  user, monthEarnings, payrollDetails, payments, allSnapshots, allPayments, filterMonth, onClose
 }) => {
   if (!payrollDetails) return null;
 
@@ -1145,6 +1488,16 @@ const PayrollBreakdownModal: React.FC<PayrollBreakdownModalProps> = ({
   }, [monthPayments]);
 
   const balance = monthEarnings - totalPaid;
+
+  const cumulativeBalance = useMemo(() => {
+    const totalEarningsAllTime = allSnapshots
+      .filter(s => s.userId === user.id)
+      .reduce((sum, s) => sum + s.totalSalary, 0);
+    const totalPaidAllTime = allPayments
+      .filter(p => p.userId === user.id)
+      .reduce((sum, p) => sum + p.amount, 0);
+    return totalEarningsAllTime - totalPaidAllTime;
+  }, [allSnapshots, allPayments, user.id]);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -1178,15 +1531,18 @@ const PayrollBreakdownModal: React.FC<PayrollBreakdownModalProps> = ({
           </div>
 
           {/* Balance */}
-          <div className={`p-4 rounded-2xl border flex justify-between items-center ${balance > 0 ? 'bg-amber-50 border-amber-100' : 'bg-slate-50 border-slate-100'}`}>
-            <div>
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Остаток к выплате</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className={`p-4 rounded-2xl border flex flex-col justify-center ${balance > 0 ? 'bg-amber-50 border-amber-100' : 'bg-slate-50 border-slate-100'}`}>
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Остаток за месяц</p>
               <p className={`text-lg font-black ${balance > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'}`}>
                 {Math.floor(balance)} ₽
               </p>
             </div>
-            <div className={`p-2 rounded-xl ${balance > 0 ? 'bg-amber-100 text-amber-600 dark:text-amber-400' : 'bg-slate-200 text-slate-400'}`}>
-              <CreditCard size={20} />
+            <div className={`p-4 rounded-2xl border flex flex-col justify-center ${cumulativeBalance > 0 ? 'bg-emerald-50 border-emerald-100' : cumulativeBalance < 0 ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Общий баланс</p>
+              <p className={`text-lg font-black ${cumulativeBalance > 0 ? 'text-emerald-600 dark:text-emerald-400' : cumulativeBalance < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'}`}>
+                {Math.floor(cumulativeBalance)} ₽
+              </p>
             </div>
           </div>
 

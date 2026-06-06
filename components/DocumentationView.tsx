@@ -71,6 +71,7 @@ export const DocumentationView: React.FC = () => {
               <li>• <b className="text-slate-900 dark:text-slate-50">Авто-завершение</b>: Если сотрудник забыл закрыть смену, система автоматически закроет её через заданные интервалы (настраивается в Настройках).</li>
               <li>• <b className="text-slate-900 dark:text-slate-50">Фотофиксация</b>: Принудительное селфи при входе и выходе для исключения подмены (требует разрешения камеры).</li>
               <li>• <b className="text-slate-900 dark:text-slate-50">Геолокация</b>: Проверка координат устройства относительно центральной точки филиала.</li>
+              <li>• <b className="text-slate-900 dark:text-slate-50">Авто-ночная смена</b>: Система может автоматически определять ночные смены, если сотрудник отработал в заданный ночной интервал более 1 часа (включается в Настройках).</li>
             </ul>
           </div>
         </div>
@@ -130,7 +131,7 @@ export const DocumentationView: React.FC = () => {
           <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700">
             <h5 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-3">Правила начислений:</h5>
             <ul className="text-xs space-y-2 text-slate-600 dark:text-slate-300">
-              <li>• <b className="text-slate-900 dark:text-slate-50">Ночные смены</b>: Автоматическое добавление бонусных минут (процент настраивается).</li>
+              <li>• <b className="text-slate-900 dark:text-slate-50">Ночные смены</b>: Автоматическое добавление бонусных минут (процент настраивается). Может определяться как вручную сотрудником, так и автоматически системой.</li>
               <li>• <b className="text-slate-900 dark:text-slate-50">Округление</b>: Правило 15 минут (до 15 мин — в пользу часа, после 15 мин — по факту).</li>
               <li>• <b className="text-slate-900 dark:text-slate-50">Штрафы</b>: Возможность ручной корректировки суммы к выплате за конкретные смены.</li>
             </ul>

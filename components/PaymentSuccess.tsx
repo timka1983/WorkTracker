@@ -13,9 +13,13 @@ export const PaymentSuccess: React.FC = () => {
     const orgId = params.get('orgId');
     const planType = params.get('plan');
     const sessionId = params.get('session_id');
+    const invoiceId = params.get('invoiceId');
+    const termMonths = parseInt(params.get('term') || '1');
+    const extraMachines = parseInt(params.get('extraMachines') || '0');
+    const extraUsers = parseInt(params.get('extraUsers') || '0');
 
     if (orgId && planType && sessionId) {
-      console.log('PaymentSuccess: Starting update for', { orgId, planType, sessionId });
+      console.log('PaymentSuccess: Starting update for', { orgId, planType, sessionId, invoiceId, termMonths, extraMachines, extraUsers });
       
       const timeoutId = setTimeout(() => {
         if (status === 'loading') {
@@ -23,7 +27,7 @@ export const PaymentSuccess: React.FC = () => {
           setErrorMessage('База данных Supabase не отвечает. Проверьте правильность URL и ключа в настройках проекта.');
           setStatus('error');
         }
-      }, 8000); // Reduced to 8s for better UX
+      }, 8000);
 
       const updatePlan = async () => {
         try {
@@ -33,27 +37,37 @@ export const PaymentSuccess: React.FC = () => {
             console.warn('PaymentSuccess: Supabase not configured, using demo mode');
             await new Promise(resolve => setTimeout(resolve, 800));
           } else {
-            console.log('PaymentSuccess: Attempting to update organization in Supabase...');
+            console.log('PaymentSuccess: Attempting to activate invoice or update organization...');
             
-            // Use a race to prevent infinite hanging if the library itself doesn't timeout
-            const orgPromise = db.updateOrganization(orgId, {
-              plan: planType,
-              expiryDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-              status: 'active'
-            });
+            let res;
+            if (invoiceId) {
+              // If we have an invoice ID, use the robust activation logic
+              res = await db.activateInvoice(invoiceId);
+            } else {
+              // Fallback to direct update if no invoice ID
+              const orgPromise = db.getOrganization(orgId).then(org => {
+                if (!org) throw new Error('Organization not found');
+                return db.updateOrganization(orgId, {
+                  plan: planType,
+                  expiryDate: new Date(Date.now() + termMonths * 30 * 24 * 60 * 60 * 1000).toISOString(),
+                  status: 'active',
+                  extraMachines: (org.extraMachines || 0) + extraMachines,
+                  extraUsers: (org.extraUsers || 0) + extraUsers
+                });
+              });
 
-            const orgRes: any = await Promise.race([
-              orgPromise,
-              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 7000))
-            ]);
+              res = await Promise.race([
+                orgPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 7000))
+              ]) as any;
+            }
 
-            if (orgRes && orgRes.error) {
-              console.error('PaymentSuccess: Org update error', orgRes.error);
-              const msg = typeof orgRes.error === 'string' ? orgRes.error : (orgRes.error as any).message;
+            if (res && res.error) {
+              console.error('PaymentSuccess: Update error', res.error);
+              const msg = typeof res.error === 'string' ? res.error : (res.error as any).message;
               
-              // Special handling for "not found" - maybe it's a new org
               if (msg.includes('0 rows') || msg.includes('not found')) {
-                console.log('PaymentSuccess: Org not found, this is normal for first-time setup');
+                console.log('PaymentSuccess: Resource not found, this is normal for first-time setup');
               } else {
                 setErrorMessage(`Ошибка Supabase: ${msg}`);
                 throw new Error(msg);
@@ -63,7 +77,7 @@ export const PaymentSuccess: React.FC = () => {
             console.log('PaymentSuccess: Saving payment record...');
             await db.saveSubscriptionPayment({
               organization_id: orgId,
-              amount: planType === PlanType.PRO ? 1500 : 5000,
+              amount: (planType === PlanType.PRO ? 1500 : 5000) * termMonths,
               plan_type: planType,
               status: 'completed',
               payment_id: sessionId
@@ -147,7 +161,7 @@ export const PaymentSuccess: React.FC = () => {
         
         <h2 className="text-2xl font-black text-slate-900 dark:text-slate-50 uppercase tracking-tighter mb-2">Оплата успешна!</h2>
         <p className="text-slate-500 dark:text-slate-400 text-sm font-medium mb-8">
-          Тариф <span className="text-blue-600 dark:text-blue-400 font-black uppercase">{plan}</span> активирован на 30 дней. 
+          Тариф <span className="text-blue-600 dark:text-blue-400 font-black uppercase">{plan}</span> активирован на {new URLSearchParams(window.location.search).get('term') || '1'} мес. 
           Все функции уже доступны.
         </p>
         

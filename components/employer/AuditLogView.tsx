@@ -10,6 +10,8 @@ interface AuditLogViewProps {
   users: User[];
 }
 
+import { SystemLogger } from '../../lib/logger';
+
 export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentOrg, users }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterAction, setFilterAction] = useState<string>('all');
@@ -80,6 +82,12 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentOrg, users })
             История действий администраторов и изменений в системе
           </p>
         </div>
+        <button 
+          onClick={() => SystemLogger.downloadLogs()}
+          className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs rounded-xl shadow-sm hover:bg-slate-200 dark:hover:bg-slate-700 transition-all uppercase tracking-widest"
+        >
+          Скачать .txt логи ошибок
+        </button>
       </div>
 
       <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20 space-y-6">

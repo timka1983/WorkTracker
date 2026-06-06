@@ -10,7 +10,7 @@ import {
   STORAGE_KEYS, INITIAL_USERS, INITIAL_MACHINES, INITIAL_POSITIONS, 
   DEFAULT_PERMISSIONS, PLAN_LIMITS, DEFAULT_PAYROLL_CONFIG 
 } from '../constants';
-import { sendNotification } from '../utils';
+import { sendNotification, cleanValue } from '../utils';
 
 import { useTimeSync } from './useTimeSync';
 import { useConfirm } from '../contexts/ConfirmContext';
@@ -19,18 +19,9 @@ import {
   checkDuplicatePositions, fixDuplicatePositions, checkDuplicateActiveShifts, fixDuplicateActiveShifts,
   checkDuplicateMachines, fixDuplicateMachines
 } from '../services/cleanupService';
+import { SystemLogger } from '../lib/logger';
 
 const DEFAULT_ORG_ID = 'default_org';
-
-// Optimized helper: only clean if it's a string and actually needs cleaning
-const cleanValue = (val: any) => {
-  if (typeof val !== 'string') return val;
-  const trimmed = val.trim();
-  if (trimmed.length > 0 && !/[a-zA-Z0-9]/.test(trimmed[0])) {
-    return trimmed.replace(/^[^a-zA-Z0-9]+/, '');
-  }
-  return trimmed;
-};
 
 export const useAppData = (currentUser: User | null) => {
   const queryClient = useQueryClient();
@@ -101,7 +92,7 @@ export const useAppData = (currentUser: User | null) => {
   }, []);
 
   const [superAdminPin, setSuperAdminPin] = useState('7777');
-  const [globalAdminPin, setGlobalAdminPin] = useState('0000');
+  const [globalAdminPin, setGlobalAdminPin] = useState('2026');
 
   // --- Org ID Logic ---
   const [orgId, setOrgId] = useState<string>(() => {
@@ -174,11 +165,21 @@ export const useAppData = (currentUser: User | null) => {
         }
         // Check expiry
         const isExpired = org.expiryDate && new Date(org.expiryDate) < new Date();
-        if (isExpired && org.status !== 'expired' && org.plan !== PlanType.FREE) {
-          org.status = 'expired';
-          org.plan = PlanType.FREE;
-          await db.updateOrganization(orgId, { status: 'expired', plan: PlanType.FREE });
-          setUpgradeReason(`Срок действия тарифа истек.`);
+        if (isExpired && (org.status !== 'expired' || org.extraMachines > 0 || org.extraUsers > 0)) {
+          if (org.plan === PlanType.FREE) {
+            org.status = 'active';
+            org.extraMachines = 0;
+            org.extraUsers = 0;
+            org.expiryDate = undefined;
+            await db.updateOrganization(orgId, { status: 'active', extraMachines: 0, extraUsers: 0, expiryDate: null });
+          } else {
+            org.status = 'expired';
+            org.plan = PlanType.FREE;
+            org.extraMachines = 0;
+            org.extraUsers = 0;
+            await db.updateOrganization(orgId, { status: 'expired', plan: PlanType.FREE, extraMachines: 0, extraUsers: 0 });
+            setUpgradeReason(`Срок действия тарифа истек.`);
+          }
         }
         return org as Organization;
       } else if (orgId === DEFAULT_ORG_ID) {
@@ -237,7 +238,7 @@ export const useAppData = (currentUser: User | null) => {
               name: 'Администратор',
               role: UserRole.EMPLOYER,
               position: 'Администратор',
-              pin: '0000',
+              pin: '2026',
               isAdmin: true,
               organizationId: orgId
             };
@@ -250,7 +251,7 @@ export const useAppData = (currentUser: User | null) => {
             name: 'Администратор',
             role: UserRole.EMPLOYER,
             position: 'Администратор',
-            pin: '0000',
+            pin: '2026',
             isAdmin: true,
             organizationId: orgId
           };
@@ -408,6 +409,18 @@ export const useAppData = (currentUser: User | null) => {
         setSuperAdminPin(config.super_admin_pin);
       }
       if (config?.global_admin_pin) setGlobalAdminPin(config.global_admin_pin);
+
+      // Super Admin specific: sync proxy settings to localStorage
+      // Regular users get their proxy settings from the 'organization' query in App.tsx
+      if (currentUser?.role === UserRole.SUPER_ADMIN && config) {
+        if (config.use_supabase_proxy !== undefined) {
+          localStorage.setItem('use_supabase_proxy', String(!!config.use_supabase_proxy));
+        }
+        if (config.use_telegram_proxy !== undefined) {
+          localStorage.setItem('use_telegram_proxy', String(!!config.use_telegram_proxy));
+        }
+      }
+      
       return config;
     }
   });
@@ -744,9 +757,10 @@ export const useAppData = (currentUser: User | null) => {
           if (typeof parsed === 'string') {
             try { parsed = JSON.parse(parsed); } catch (e) { parsed = {}; }
           }
+          const cleanedUserId = cleanValue(payload.new.user_id);
           const updated = {
             ...prev,
-            [payload.new.user_id]: parsed || {}
+            [cleanedUserId]: parsed || {}
           };
           localStorage.setItem(STORAGE_KEYS.ACTIVE_SHIFTS, JSON.stringify(updated));
           return updated;
@@ -754,7 +768,8 @@ export const useAppData = (currentUser: User | null) => {
       } else if (payload.eventType === 'DELETE' && payload.old && payload.old.user_id) {
         setActiveShiftsMap(prev => {
           const updated = { ...prev };
-          delete updated[payload.old.user_id];
+          const cleanedUserId = cleanValue(payload.old.user_id);
+          delete updated[cleanedUserId];
           localStorage.setItem(STORAGE_KEYS.ACTIVE_SHIFTS, JSON.stringify(updated));
           return updated;
         });
@@ -1015,6 +1030,7 @@ export const useAppData = (currentUser: User | null) => {
     },
     onError: (error: any, variables) => {
       console.error('Mutation error:', error);
+      SystemLogger.log('Upsert Logs', 'Error syncing logs', error);
       
       // If offline or network error, save to queue
       if (error.message === 'OFFLINE' || error.message?.includes('network') || !navigator.onLine) {

@@ -2,6 +2,8 @@ import React, { memo } from 'react';
 import { User, PositionPermissions } from '../../types';
 import { STORAGE_KEYS } from '../../constants';
 
+import { MessageSquare } from 'lucide-react';
+
 interface EmployeeHeaderProps {
   user: User;
   isAbsentToday: boolean;
@@ -34,9 +36,6 @@ export const EmployeeHeader = memo<EmployeeHeaderProps>(({
             {isAbsentToday && <span className="bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">На выходном сегодня</span>}
           </div>
         </div>
-      </div>
-      <div className="flex items-center gap-4">
-        {/* Refresh button removed as requested */}
       </div>
     </div>
   );

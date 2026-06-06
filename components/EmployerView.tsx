@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { WorkLog, User, EntryType, UserRole, Machine, FIXED_POSITION_TURNER, PositionConfig, PositionPermissions, Organization, PlanType, Plan, PayrollConfig, PlanLimits, Branch, PayrollPeriod, PayrollStatus, PayrollSnapshot } from '../types';
-import { getDaysInMonthArray, formatTime, calculateMinutes, calculateMonthlyPayroll, getEffectivePayrollConfig, formatDurationShort } from '../utils';
+import { getDaysInMonthArray, formatTime, calculateMinutes, calculateMonthlyPayroll, getEffectivePayrollConfig, formatDurationShort, calculateNightShiftOverlap } from '../utils';
 import { format, startOfDay, subDays, parseISO } from 'date-fns';
 import { ru } from 'date-fns/locale/ru';
 import { DEFAULT_PERMISSIONS, STORAGE_KEYS, PLAN_LIMITS, DEFAULT_PAYROLL_CONFIG } from '../constants';
@@ -19,6 +19,7 @@ import { EmployeeEditModal } from './employer/EmployeeEditModal';
 import { LogEditModal } from './employer/LogEditModal';
 import { PhotoPreviewModal } from './employer/PhotoPreviewModal';
 import { SupportChat } from './employer/SupportChat';
+import { EmployeeChat } from './employee/EmployeeChat';
 import { DocumentationView } from './DocumentationView';
 import { logAuditAction } from '../lib/audit';
 import { MessageSquare, X } from 'lucide-react';
@@ -91,11 +92,24 @@ const EmployerView: React.FC<EmployerViewProps> = ({
   const [configuringPosition, setConfiguringPosition] = useState<PositionConfig | null>(null);
   const [expandedTurnerRows, setExpandedTurnerRows] = useState<Set<string>>(new Set());
   const [isRecalculating, setIsRecalculating] = useState(false);
+  const [selectedLateEmployeeId, setSelectedLateEmployeeId] = useState<string | null>(null);
 
   const [promoCode, setPromoCode] = useState('');
   const [isApplyingPromo, setIsApplyingPromo] = useState(false);
   const [promoMessage, setPromoMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
   const [showBirthdayNotification, setShowBirthdayNotification] = useState(true);
+  const [showEmployeeChatModal, setShowEmployeeChatModal] = useState(false);
+
+  useEffect(() => {
+    (window as any).isEmployeeChatOpen = showEmployeeChatModal;
+    return () => { (window as any).isEmployeeChatOpen = false; };
+  }, [showEmployeeChatModal]);
+
+  useEffect(() => {
+    const handleOpenChat = () => setShowEmployeeChatModal(true);
+    window.addEventListener('open-employee-chat', handleOpenChat);
+    return () => window.removeEventListener('open-employee-chat', handleOpenChat);
+  }, []);
 
   const birthdayEmployees = useMemo(() => {
     const today = getNow();
@@ -106,7 +120,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     });
   }, [users, getNow]);
 
-  const [newUser, setNewUser] = useState<{ name: string; position: string; department: string; pin: string; birthday: string; requirePhoto: boolean; branchId?: string }>({ name: '', position: positions[0]?.name || '', department: '', pin: '0000', birthday: '', requirePhoto: false, branchId: '' });
+  const [newUser, setNewUser] = useState<{ name: string; position: string; department: string; pin: string; birthday: string; phone: string; requirePhoto: boolean; branchId?: string }>({ name: '', position: positions[0]?.name || '', department: '', pin: '0000', birthday: '', phone: '', requirePhoto: false, branchId: '' });
   const [newMachineName, setNewMachineName] = useState('');
   const [newMachineBranchId, setNewMachineBranchId] = useState('');
   const [newPositionName, setNewPositionName] = useState('');
@@ -174,17 +188,29 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     const baseLimits = PLAN_LIMITS[currentPlanType] || PLAN_LIMITS[PlanType.FREE];
     
     const dynamicPlan = plans.find(p => p.type.toUpperCase() === currentPlanType);
-    if (!dynamicPlan) return baseLimits;
+    
+    let mergedLimits;
+    if (!dynamicPlan) {
+      mergedLimits = { ...baseLimits };
+    } else {
+      // Merge dynamic limits with base limits to ensure all features are present
+      mergedLimits = {
+        ...baseLimits,
+        ...dynamicPlan.limits,
+        features: {
+          ...baseLimits.features,
+          ...(dynamicPlan.limits?.features || {})
+        }
+      };
+    }
 
-    // Merge dynamic limits with base limits to ensure all features are present
-    return {
-      ...baseLimits,
-      ...dynamicPlan.limits,
-      features: {
-        ...baseLimits.features,
-        ...(dynamicPlan.limits?.features || {})
-      }
-    };
+    // Add extra purchased units
+    if (currentOrg) {
+      mergedLimits.maxMachines += (currentOrg.extraMachines || 0);
+      mergedLimits.maxUsers += (currentOrg.extraUsers || 0);
+    }
+
+    return mergedLimits;
   }, [currentOrg, plans]);
 
   const isUserLimitReached = users.length >= planLimits.maxUsers;
@@ -449,6 +475,125 @@ const EmployerView: React.FC<EmployerViewProps> = ({
       }).sort((a, b) => b.count - a.count).filter(a => a.count > 0).slice(0, 3);
     }
 
+    // Lateness calculation
+    const shiftStarts = [
+      currentOrg?.shiftStart1 !== undefined ? currentOrg.shiftStart1 : '08:00',
+      currentOrg?.shiftStart2 !== undefined ? currentOrg.shiftStart2 : '16:00',
+      currentOrg?.shiftStart3 !== undefined ? currentOrg.shiftStart3 : '00:00'
+    ].filter(s => s !== '');
+
+    const calculateLateness = (checkIn: string) => {
+      if (!shiftStarts.length) return null;
+      const checkInDate = new Date(checkIn);
+      const checkInMinutes = checkInDate.getHours() * 60 + checkInDate.getMinutes();
+      
+      let minLate = Infinity;
+      let expectedStart = '';
+      for (const start of shiftStarts) {
+        const [hours, minutes] = start.split(':').map(Number);
+        const startMinutes = hours * 60 + minutes;
+        
+        let diff = checkInMinutes - startMinutes;
+        if (diff < -12 * 60) diff += 24 * 60;
+        if (diff > 12 * 60) diff -= 24 * 60;
+        
+        // Авто-привязка логов к запланированным сменам
+        if (diff >= -240 && diff <= 480) {
+          if (diff > 0) {
+            if (diff < minLate) {
+              minLate = diff;
+              expectedStart = start;
+            }
+          } else {
+            return null; // Not late
+          }
+        }
+      }
+      return minLate === Infinity ? null : { lateMinutes: minLate, expectedStart };
+    };
+
+    const lateTodayEmployees: { id: string, name: string }[] = [];
+    const lateWeekCounts: Record<string, number> = {};
+    const lateMonthCounts: Record<string, number> = {};
+    const employeeLatenessDetails: Record<string, { date: string, checkIn: string, expected: string, lateMinutes: number }[]> = {};
+
+    const last7DaysArr = Array.from({ length: 7 }, (_, i) => format(subDays(getNow(), i), 'yyyy-MM-dd'));
+
+    employees.forEach(emp => {
+      const userLogsMap = logsLookup[emp.id] || {};
+      
+      // Combine completed logs and active shifts
+      const allEmpLogs: WorkLog[] = [];
+      
+      Object.keys(userLogsMap).forEach(date => {
+        if (date.startsWith(filterMonth)) {
+          allEmpLogs.push(...userLogsMap[date].filter(l => l.entryType === EntryType.WORK && l.checkIn));
+        }
+      });
+      
+      activeShifts.filter(s => s.userId === emp.id && s.entryType === EntryType.WORK && s.checkIn).forEach(s => {
+        if (!allEmpLogs.some(l => l.id === s.id)) {
+          allEmpLogs.push(s);
+        }
+      });
+      
+      const logsByDate: Record<string, WorkLog[]> = {};
+      allEmpLogs.forEach(l => {
+        const d = l.date || l.checkIn!.split('T')[0];
+        if (!logsByDate[d]) logsByDate[d] = [];
+        logsByDate[d].push(l);
+      });
+      
+      Object.keys(logsByDate).forEach(date => {
+        if (date.startsWith(filterMonth)) {
+          const dayLogs = logsByDate[date];
+          
+          let isLateDay = false;
+          dayLogs.forEach(l => {
+            const lateness = calculateLateness(l.checkIn!);
+            if (lateness) {
+              isLateDay = true;
+              if (!employeeLatenessDetails[emp.id]) employeeLatenessDetails[emp.id] = [];
+              if (!employeeLatenessDetails[emp.id].some(d => d.checkIn === l.checkIn)) {
+                employeeLatenessDetails[emp.id].push({
+                  date,
+                  checkIn: l.checkIn!,
+                  expected: lateness.expectedStart,
+                  lateMinutes: lateness.lateMinutes
+                });
+              }
+            }
+          });
+          
+          if (isLateDay) {
+            lateMonthCounts[emp.id] = (lateMonthCounts[emp.id] || 0) + 1;
+            if (last7DaysArr.includes(date)) {
+              lateWeekCounts[emp.id] = (lateWeekCounts[emp.id] || 0) + 1;
+            }
+            if (date === todayStr) {
+              lateTodayEmployees.push({ id: emp.id, name: emp.name });
+            }
+          }
+        }
+      });
+    });
+
+    const lateWeekEmployees = Object.entries(lateWeekCounts)
+      .map(([id, count]) => ({
+        id,
+        name: employees.find(e => e.id === id)?.name || 'Неизвестно',
+        count
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const lateMonthEmployees = Object.entries(lateMonthCounts)
+      .map(([id, count]) => ({
+        id,
+        name: employees.find(e => e.id === id)?.name || 'Неизвестно',
+        count
+      }))
+      .sort((a, b) => b.count - a.count);
+
     const activeLogsMap: Record<string, WorkLog[]> = {};
     const orphanedActiveShifts: WorkLog[] = [];
     
@@ -467,8 +612,8 @@ const EmployerView: React.FC<EmployerViewProps> = ({
       return todayLogs.some(l => l.entryType === EntryType.SICK || l.entryType === EntryType.VACATION);
     });
 
-    return { activeShifts, finishedToday, avgWeeklyHours, absenceCounts, activeLogsMap, todayStr, orphanedActiveShifts, sickOrVacationToday };
-  }, [logs, logsLookup, employees, filterMonth, activeShiftsMap, serverStats, getNow, filteredUsers]);
+    return { activeShifts, finishedToday, avgWeeklyHours, absenceCounts, activeLogsMap, todayStr, orphanedActiveShifts, sickOrVacationToday, lateTodayEmployees, lateWeekEmployees, lateMonthEmployees, employeeLatenessDetails };
+  }, [logs, logsLookup, employees, filterMonth, activeShiftsMap, serverStats, getNow, filteredUsers, currentOrg]);
 
   // Функция для принудительного завершения смены администратором
   const handleForceFinish = async (log: WorkLog) => {
@@ -590,6 +735,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
       department: newUser.department,
       pin: newUser.pin,
       birthday: newUser.birthday,
+      phone: newUser.phone,
       role: UserRole.EMPLOYEE,
       requirePhoto: newUser.requirePhoto,
       forcePinChange: false
@@ -607,7 +753,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
         `Имя: ${user.name}, Должность: ${user.position}, Отдел: ${user.department || 'Нет'}, PIN: ${user.pin}, Фотофиксация: ${user.requirePhoto}`
       );
     }
-    setNewUser({ name: '', position: positions[0]?.name || '', department: '', pin: '0000', birthday: '', requirePhoto: false, branchId: '' });
+    setNewUser({ name: '', position: positions[0]?.name || '', department: '', pin: '0000', birthday: '', phone: '', requirePhoto: false, branchId: '' });
   };
 
   const deleteLogItem = (logId: string) => {
@@ -629,20 +775,60 @@ const EmployerView: React.FC<EmployerViewProps> = ({
     }
   };
 
-  const saveCorrection = (logId: string, val: number, fine?: number, bonus?: number, itemsProduced?: number) => {
+  const saveCorrection = (logId: string, val: number, fine?: number, bonus?: number, itemsProduced?: number, checkIn?: string, checkOut?: string, isNightShift?: boolean, machineId?: string | null) => {
     const log = logs.find(l => l.id === logId);
     if (!log) return;
     
     const note = tempNotes[logId] !== undefined ? tempNotes[logId] : (log.correctionNote || '');
+    
+    let finalDuration = val;
+    let finalIsNightShift = isNightShift !== undefined ? isNightShift : log.isNightShift;
+    let finalCheckIn = checkIn !== undefined ? checkIn : log.checkIn;
+    let finalCheckOut = checkOut !== undefined ? checkOut : log.checkOut;
+
+    // Если время изменилось, пересчитываем длительность
+    if ((checkIn && checkIn !== log.checkIn) || (checkOut && checkOut !== log.checkOut)) {
+      if (finalCheckIn && finalCheckOut) {
+        let inDate = new Date(finalCheckIn);
+        let outDate = new Date(finalCheckOut);
+        
+        // Если время окончания меньше времени начала, значит смена переходит на следующий день
+        if (outDate < inDate) {
+          outDate.setDate(outDate.getDate() + 1);
+          finalCheckOut = outDate.toISOString();
+        } else if (outDate.getTime() - inDate.getTime() > 24 * 60 * 60 * 1000) {
+          // Если смена больше 24 часов, скорее всего это ошибка при редактировании ночной смены обратно в дневную
+          outDate.setDate(outDate.getDate() - 1);
+          finalCheckOut = outDate.toISOString();
+        }
+
+        const baseMinutes = calculateMinutes(finalCheckIn, finalCheckOut);
+        finalDuration = baseMinutes;
+        
+        // Применяем бонус ночной смены, если он есть
+        const bonusPercent = currentOrg?.nightShiftBonus || 0;
+        if (finalIsNightShift && bonusPercent > 0) {
+          const nightOverlapMinutes = (currentOrg?.autoNightShift && finalCheckIn && finalCheckOut)
+            ? calculateNightShiftOverlap(finalCheckIn, finalCheckOut, currentOrg.nightShiftStart, currentOrg.nightShiftEnd)
+            : baseMinutes;
+          finalDuration += Math.floor(nightOverlapMinutes * (bonusPercent / 100));
+        }
+      }
+    }
+
     const updatedLog = { 
       ...log, 
-      durationMinutes: val, 
+      durationMinutes: finalDuration, 
       isCorrected: true, 
       correctionNote: note,
       correctionTimestamp: getNow().toISOString(),
       fine: fine !== undefined ? fine : log.fine,
       bonus: bonus !== undefined ? bonus : log.bonus,
-      itemsProduced: itemsProduced !== undefined ? itemsProduced : log.itemsProduced
+      itemsProduced: itemsProduced !== undefined ? itemsProduced : log.itemsProduced,
+      checkIn: finalCheckIn,
+      checkOut: finalCheckOut,
+      isNightShift: finalIsNightShift,
+      machineId: machineId !== undefined ? (machineId === null ? undefined : machineId) : log.machineId
     };
     
     if (currentOrg && currentUser) {
@@ -652,14 +838,46 @@ const EmployerView: React.FC<EmployerViewProps> = ({
         currentUser.id,
         currentUser.name,
         'edit_shift',
-        `Изменена смена за ${format(new Date(log.date), 'dd.MM.yyyy')}: ${val} мин, штраф: ${fine || 0}, премия: ${bonus || 0}`,
+        `Изменена смена за ${format(new Date(log.date), 'dd.MM.yyyy')}: ${finalDuration} мин, штраф: ${fine || 0}, премия: ${bonus || 0}`,
         targetUser?.id,
         targetUser?.name,
-        `Длительность: ${log.durationMinutes} -> ${val}, штраф: ${log.fine || 0} -> ${fine || 0}, премия: ${log.bonus || 0} -> ${bonus || 0}, произведено: ${log.itemsProduced || 0} -> ${itemsProduced || 0}`
+        `Длительность: ${log.durationMinutes} -> ${finalDuration}, штраф: ${log.fine || 0} -> ${fine || 0}, премия: ${log.bonus || 0} -> ${bonus || 0}, произведено: ${log.itemsProduced || 0} -> ${itemsProduced || 0}`
       );
     }
     
     onLogsUpsert([updatedLog]);
+  };
+
+  const handleAddManualLog = (userId: string, date: string) => {
+    const newLog: WorkLog = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+      userId,
+      date,
+      checkIn: `${date}T09:00:00.000Z`,
+      checkOut: `${date}T18:00:00.000Z`,
+      durationMinutes: 9 * 60,
+      entryType: EntryType.WORK,
+      isNightShift: false,
+      isCorrected: true,
+      correctionNote: 'Добавлено вручную',
+      correctionTimestamp: getNow().toISOString()
+    };
+    
+    if (currentOrg && currentUser) {
+      const targetUser = users.find(u => u.id === userId);
+      logAuditAction(
+        currentOrg.id,
+        currentUser.id,
+        currentUser.name,
+        'edit_shift',
+        `Добавлена смена вручную за ${format(new Date(date), 'dd.MM.yyyy')}`,
+        targetUser?.id,
+        targetUser?.name,
+        `Смена добавлена вручную`
+      );
+    }
+    
+    onLogsUpsert([newLog]);
   };
 
   const handleUpdateMachinesList = (newMachines: Machine[], deletedMachineInfo?: { id: string, reason: string }[]) => {
@@ -816,13 +1034,42 @@ const EmployerView: React.FC<EmployerViewProps> = ({
       const bonusPercent = currentOrg.nightShiftBonus || 0;
       logs.forEach(log => {
         if (log.checkIn && log.checkOut && log.entryType === EntryType.WORK) {
-          const baseMinutes = calculateMinutes(log.checkIn, log.checkOut);
-          let finalMinutes = baseMinutes;
-          if (log.isNightShift && bonusPercent > 0) {
-            finalMinutes += Math.floor(baseMinutes * (bonusPercent / 100));
+          // Skip manually corrected logs
+          if (log.isCorrected) return;
+
+          let actualCheckOut = log.checkOut;
+          let outDate = new Date(actualCheckOut);
+          let inDate = new Date(log.checkIn);
+          
+          if (outDate < inDate) {
+            outDate.setDate(outDate.getDate() + 1);
+            actualCheckOut = outDate.toISOString();
+          } else if (outDate.getTime() - inDate.getTime() > 24 * 60 * 60 * 1000) {
+            outDate.setDate(outDate.getDate() - 1);
+            actualCheckOut = outDate.toISOString();
           }
-          if (finalMinutes !== log.durationMinutes) {
-            logsToUpdate.push({ ...log, durationMinutes: finalMinutes });
+
+          const baseMinutes = calculateMinutes(log.checkIn, actualCheckOut);
+          
+          let isNightShift = log.isNightShift;
+          let nightOverlapMinutes = 0;
+          
+          if (currentOrg.autoNightShift) {
+            nightOverlapMinutes = calculateNightShiftOverlap(log.checkIn, actualCheckOut, currentOrg.nightShiftStart, currentOrg.nightShiftEnd);
+            isNightShift = nightOverlapMinutes >= 60;
+          }
+
+          let finalMinutes = baseMinutes;
+          if (isNightShift && bonusPercent > 0) {
+            // Apply bonus ONLY to the night overlap minutes, not the whole shift
+            const bonusMinutes = currentOrg.autoNightShift 
+              ? Math.floor(nightOverlapMinutes * (bonusPercent / 100))
+              : Math.floor(baseMinutes * (bonusPercent / 100)); // fallback if auto is off but flag is manually set
+            finalMinutes += bonusMinutes;
+          }
+          
+          if (finalMinutes !== log.durationMinutes || isNightShift !== log.isNightShift) {
+            logsToUpdate.push({ ...log, durationMinutes: finalMinutes, isNightShift });
           }
         }
       });
@@ -1232,81 +1479,85 @@ const EmployerView: React.FC<EmployerViewProps> = ({
           saveCorrection={saveCorrection}
           tempNotes={tempNotes}
           setTempNotes={setTempNotes}
+          currentOrg={currentOrg}
+          onAddManualLog={handleAddManualLog}
         />
       )}
 
-      <div className="flex flex-col sm:flex-row justify-between items-center bg-white dark:bg-slate-900 p-4 rounded-3xl border border-slate-200 dark:border-slate-800 gap-4 shadow-md dark:shadow-slate-900/20 no-print">
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-           <button 
-            onClick={async () => {
-              if (confirm('Это попытается восстановить привязку сотрудников и логов к вашей организации. Продолжить?')) {
-                const results = await db.getDiagnostics();
-                
-                // Only block if critical tables are missing
-                const criticalTables = ['organizations', 'users', 'work_logs'];
-                const missingCritical = criticalTables.some(t => results.tables[t]?.status !== 'ok');
-                
-                if (missingCritical) {
-                  alert('Обнаружены критические ошибки в структуре базы данных (отсутствуют таблицы). Пожалуйста, выполните SQL-фикс в панели Супер-Админа.');
-                  return;
+      {(viewMode === 'matrix' || viewMode === 'payroll') && (
+        <div className="flex flex-col sm:flex-row justify-between items-center bg-white dark:bg-slate-900 p-4 rounded-3xl border border-slate-200 dark:border-slate-800 gap-4 shadow-md dark:shadow-slate-900/20 no-print">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+             <button 
+              onClick={async () => {
+                if (confirm('Это попытается восстановить привязку сотрудников и логов к вашей организации. Продолжить?')) {
+                  const results = await db.getDiagnostics();
+                  
+                  // Only block if critical tables are missing
+                  const criticalTables = ['organizations', 'users', 'work_logs'];
+                  const missingCritical = criticalTables.some(t => results.tables[t]?.status !== 'ok');
+                  
+                  if (missingCritical) {
+                    alert('Обнаружены критические ошибки в структуре базы данных (отсутствуют таблицы). Пожалуйста, выполните SQL-фикс в панели Супер-Админа.');
+                    return;
+                  }
+                  
+                  if (results.sqlFixes && results.sqlFixes.length > 0) {
+                    console.warn('Non-critical SQL fixes detected:', results.sqlFixes);
+                  }
+                  
+                  // Deep repair
+                  const repairResult = await db.repairOrganizationData(currentOrg?.id || '');
+                  if (repairResult.error) {
+                    alert('Ошибка при восстановлении: ' + repairResult.error);
+                  } else {
+                    alert('Восстановление завершено. Страница будет перезагружена.');
+                    window.location.reload();
+                  }
                 }
-                
-                if (results.sqlFixes && results.sqlFixes.length > 0) {
-                  console.warn('Non-critical SQL fixes detected:', results.sqlFixes);
-                }
-                
-                // Deep repair
-                const repairResult = await db.repairOrganizationData(currentOrg?.id || '');
-                if (repairResult.error) {
-                  alert('Ошибка при восстановлении: ' + repairResult.error);
-                } else {
-                  alert('Восстановление завершено. Страница будет перезагружена.');
-                  window.location.reload();
-                }
-              }
-            }}
-            className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-all"
-            title="Исправить данные"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-          </button>
-          
-          {onRefresh && (
-              <button 
-                onClick={() => onRefresh()} 
-                disabled={isSyncing}
-                className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-slate-100 dark:bg-slate-800 text-slate-400' : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40'}`} 
-                title="Обновить данные"
-              >
-                <svg className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              </button>
-           )}
-           {branches.length > 0 && (
-             <select 
-               value={selectedBranchId || ''} 
-               onChange={(e) => setSelectedBranchId(e.target.value || null)}
-               className="border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-900 dark:text-slate-100"
-             >
-               <option value="">Все филиалы</option>
-               {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-             </select>
-           )}
-            {(viewMode === 'matrix' || viewMode === 'payroll') && (
-              <input type="month" value={filterMonth} onChange={(e) => {
-                setFilterMonth(e.target.value);
-                if (onMonthChange) onMonthChange(e.target.value);
-              }} className="border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-900 dark:text-slate-100" />
-            )}
-           <button onClick={downloadExcel} className="p-2.5 bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors" title="Скачать Excel">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-           </button>
-           <button onClick={handlePrint} className="p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors" title="Печать">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 00-2 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
-           </button>
+              }}
+              className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-all"
+              title="Исправить данные"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            </button>
+            
+            {onRefresh && (
+                <button 
+                  onClick={() => onRefresh()} 
+                  disabled={isSyncing}
+                  className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-slate-100 dark:bg-slate-800 text-slate-400' : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40'}`} 
+                  title="Обновить данные"
+                >
+                  <svg className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+             )}
+             {branches.length > 0 && (
+               <select 
+                 value={selectedBranchId || ''} 
+                 onChange={(e) => setSelectedBranchId(e.target.value || null)}
+                 className="border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-900 dark:text-slate-100"
+               >
+                 <option value="">Все филиалы</option>
+                 {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+               </select>
+             )}
+              {(viewMode === 'matrix' || viewMode === 'payroll') && (
+                <input type="month" value={filterMonth} onChange={(e) => {
+                  setFilterMonth(e.target.value);
+                  if (onMonthChange) onMonthChange(e.target.value);
+                }} className="border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-900 dark:text-slate-100" />
+              )}
+             <button onClick={downloadExcel} className="p-2.5 bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors" title="Скачать Excel">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+             </button>
+             <button onClick={handlePrint} className="p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors" title="Печать">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 00-2 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
+             </button>
+          </div>
         </div>
-      </div>
+      )}
 
 
       {viewMode === 'analytics' && (
@@ -1338,8 +1589,58 @@ const EmployerView: React.FC<EmployerViewProps> = ({
             handleForceFinish={handleForceFinish}
             branches={branches}
             onEditLog={(log) => setEditingLog({ userId: log.userId, date: log.date })}
+            onEmployeeLateClick={(userId) => setSelectedLateEmployeeId(userId)}
           />
         </>
+      )}
+
+      {showEmployeeChatModal && propCurrentUser && currentOrg && (
+        <div className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-[2rem] w-full max-w-lg shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 overflow-hidden relative animate-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setShowEmployeeChatModal(false)} 
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-900 dark:text-slate-50 text-2xl font-light transition-colors z-10 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center"
+            >
+              &times;
+            </button>
+            <EmployeeChat 
+               currentUser={propCurrentUser} 
+               orgId={currentOrg.id} 
+               users={users}
+            />
+          </div>
+        </div>
+      )}
+
+      {selectedLateEmployeeId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+              <h3 className="text-lg font-black text-slate-800 dark:text-white">
+                Опоздания: {employees.find(e => e.id === selectedLateEmployeeId)?.name}
+              </h3>
+              <button onClick={() => setSelectedLateEmployeeId(null)} className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-full transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto">
+              <div className="space-y-3">
+                {dashboardStats.employeeLatenessDetails[selectedLateEmployeeId]?.map((detail: any, i: number) => (
+                  <div key={i} className="flex justify-between items-center p-3 bg-red-50 dark:bg-red-900/10 rounded-xl border border-red-100 dark:border-red-900/30">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800 dark:text-slate-200">{format(parseISO(detail.date), 'dd MMMM yyyy', { locale: ru })}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Начало смены: {detail.expected}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-black text-red-600 dark:text-red-400">{formatTime(detail.checkIn)}</p>
+                      <p className="text-xs font-bold text-red-500 dark:text-red-500">+{detail.lateMinutes} мин</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {viewMode === 'matrix' && (
@@ -1380,6 +1681,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
           branches={branches}
           getArchivedUsers={getArchivedUsers}
           handleRestoreUser={onRestoreUser}
+          setViewMode={setViewMode}
         />
       )}
 
@@ -1471,6 +1773,7 @@ const EmployerView: React.FC<EmployerViewProps> = ({
           setNewMachineBranchId={setNewMachineBranchId}
           getArchivedMachines={getArchivedMachines}
           handleRestoreMachine={onRestoreMachine}
+          setViewMode={setViewMode}
         />
       )}
       {viewMode === 'support' && (

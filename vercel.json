@@ -2,8 +2,20 @@
 {
   "rewrites": [
     {
-      "source": "/(.*)",
-      "destination": "/"
+      "source": "/api/supabase-proxy/(.*)",
+      "destination": "/api/supabase-proxy"
+    },
+    {
+      "source": "/api/telegram-proxy/(.*)",
+      "destination": "/api/telegram-proxy"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
     }
   ]
 }

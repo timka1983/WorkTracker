@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { Machine, PositionConfig, PlanLimits, Organization, FIXED_POSITION_TURNER, Branch } from '../../types';
 import { DEFAULT_PERMISSIONS } from '../../constants';
 import { db } from '../../lib/supabase';
+import { getTelegramUrl } from '../../lib/telegram';
 import { BranchEditModal } from './BranchEditModal';
-import { Archive, Settings } from 'lucide-react';
+import { Archive, Settings, Check } from 'lucide-react';
 import { ArchiveConfirmModal, ArchiveViewModal } from './ArchiveModals';
 import MapModal from './MapModal';
 import { useConfirm } from '../../contexts/ConfirmContext';
@@ -43,6 +44,7 @@ interface SettingsViewProps {
   setNewMachineBranchId?: (id: string) => void;
   getArchivedMachines: () => Promise<Machine[] | null>;
   handleRestoreMachine: (id: string) => Promise<{ error: any }>;
+  setViewMode?: (mode: 'billing') => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -79,7 +81,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   newMachineBranchId,
   setNewMachineBranchId,
   getArchivedMachines,
-  handleRestoreMachine
+  handleRestoreMachine,
+  setViewMode
 }) => {
   const { confirm } = useConfirm();
   const [isMapOpen, setIsMapOpen] = useState(false);
@@ -251,6 +254,91 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                  </div>
               </div>
 
+              <div className="space-y-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      className="sr-only" 
+                      checked={currentOrg?.autoNightShift || false}
+                      onChange={async (e) => {
+                        const val = e.target.checked;
+                        if (currentOrg) {
+                          onUpdateOrg({ ...currentOrg, autoNightShift: val });
+                          await db.updateOrganization(currentOrg.id, { autoNightShift: val });
+                        }
+                      }}
+                    />
+                    <div className={`block w-10 h-6 rounded-full transition-colors ${currentOrg?.autoNightShift ? 'bg-blue-500' : 'bg-slate-200 dark:bg-slate-700'}`}></div>
+                    <div className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${currentOrg?.autoNightShift ? 'translate-x-4' : ''}`}></div>
+                  </div>
+                  <div>
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-slate-100 transition-colors">Автоматическое определение ночной смены</span>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Система сама рассчитает ночные часы, если отработано более 1 часа</p>
+                  </div>
+                </label>
+                
+                {currentOrg?.autoNightShift && (
+                  <div className="grid grid-cols-2 gap-4 mt-2">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Начало ночи</label>
+                      <input 
+                        type="time" 
+                        value={currentOrg?.nightShiftStart || '22:00'}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          if (currentOrg) {
+                            onUpdateOrg({ ...currentOrg, nightShiftStart: val });
+                            await db.updateOrganization(currentOrg.id, { nightShiftStart: val });
+                          }
+                        }}
+                        className="w-full border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 dark:text-slate-100 outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Конец ночи</label>
+                      <input 
+                        type="time" 
+                        value={currentOrg?.nightShiftEnd || '06:00'}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          if (currentOrg) {
+                            onUpdateOrg({ ...currentOrg, nightShiftEnd: val });
+                            await db.updateOrganization(currentOrg.id, { nightShiftEnd: val });
+                          }
+                        }}
+                        className="w-full border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 dark:text-slate-100 outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <h4 className="text-xs font-black text-slate-900 dark:text-slate-100 uppercase tracking-widest">Время начала смен</h4>
+                <p className="text-[10px] text-slate-400">Используется для фиксации опозданий и аналитики.</p>
+                <div className="grid grid-cols-3 gap-4">
+                  {[1, 2, 3].map((shift) => (
+                    <div key={shift} className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">{shift} смена</label>
+                      <input 
+                        type="time" 
+                        value={currentOrg?.[`shiftStart${shift}` as keyof Organization] !== undefined ? (currentOrg?.[`shiftStart${shift}` as keyof Organization] as string) : (shift === 1 ? '08:00' : shift === 2 ? '16:00' : '00:00')}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          if (currentOrg) {
+                            const key = `shiftStart${shift}` as keyof Organization;
+                            onUpdateOrg({ ...currentOrg, [key]: val });
+                            await db.updateOrganization(currentOrg.id, { [key]: val });
+                          }
+                        }}
+                        className="w-full border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 dark:text-slate-100 outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <div className="space-y-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                  <label className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-white dark:hover:bg-slate-800 transition-all">
                    <div>
@@ -279,6 +367,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                    />
                  </label>
               </div>
+              
+              <button 
+                onClick={async () => {
+                  if (currentOrg) {
+                    try {
+                      await db.updateOrganization(currentOrg.id, {
+                        nightShiftBonus: nightShiftBonusMinutes,
+                        autoNightShift: currentOrg.autoNightShift,
+                        nightShiftStart: currentOrg.nightShiftStart,
+                        nightShiftEnd: currentOrg.nightShiftEnd,
+                        shiftStart1: currentOrg.shiftStart1,
+                        shiftStart2: currentOrg.shiftStart2,
+                        shiftStart3: currentOrg.shiftStart3,
+                        roundShiftMinutes: currentOrg.roundShiftMinutes
+                      });
+                      alert('Параметры смен успешно сохранены!');
+                    } catch (err: any) {
+                      alert('Ошибка при сохранении: ' + (err.message || err));
+                    }
+                  }
+                }}
+                className="mt-6 w-full py-3 bg-blue-500 text-white rounded-xl font-black uppercase tracking-widest text-xs hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-500/30"
+              >
+                Сохранить параметры смен
+              </button>
            </div>
 
            <div className="space-y-4">
@@ -331,6 +444,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 >
                   Проверить разрешения браузера
                 </button>
+
+                <button 
+                  onClick={() => {
+                    alert('Закройте или сверните приложение сейчас. Уведомление придет через 5 секунд.');
+                    setTimeout(async () => {
+                      try {
+                        const reg = await navigator.serviceWorker.ready;
+                        await reg.showNotification('Тестовое уведомление', {
+                          body: 'Это уведомление пришло когда приложение было свернуто.',
+                          icon: '/icons/icon-192.png',
+                          badge: '/icons/badge-72.png',
+                          tag: 'test-push',
+                          renotify: true
+                        } as any);
+                      } catch (e) {
+                         console.error('Test notification failed', e);
+                      }
+                    }, 5000);
+                  }}
+                  className="w-full mt-2 py-2 bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-200 transition-all border border-blue-200 dark:border-blue-800"
+                >
+                  Тест свернутого окна (5 сек)
+                </button>
               </div>
            </div>
         </div>
@@ -361,7 +497,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                        }
                     }}
                   />
-                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  <div className="w-11 h-6 bg-slate-400 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 shadow-md border border-slate-500 dark:border-transparent"></div>
                </label>
             </div>
 
@@ -442,6 +578,130 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </section>
 
       <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20 relative overflow-hidden">
+         <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-indigo-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Оформление и Темы</h3>
+         
+         <div className="mb-8 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-3xl border border-indigo-100 dark:border-indigo-900/30 flex items-center justify-between">
+            <div>
+               <p className="text-sm font-bold text-indigo-900 dark:text-indigo-100">Применить тему для сотрудников</p>
+               <p className="text-[10px] text-indigo-600 dark:text-indigo-400">Если выключено, сотрудники будут видеть стандартную или темную тему</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+               <input 
+                 type="checkbox" 
+                 className="sr-only peer"
+                 checked={currentOrg?.applyThemeToEmployees || false}
+                 onChange={(e) => {
+                    if (currentOrg) {
+                       const val = e.target.checked;
+                       onUpdateOrg({ ...currentOrg, applyThemeToEmployees: val });
+                       db.updateOrganization(currentOrg.id, { applyThemeToEmployees: val });
+                    }
+                 }}
+               />
+               <div className="w-11 h-6 bg-slate-400 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 shadow-md border border-slate-500 dark:border-transparent"></div>
+            </label>
+         </div>
+
+         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+               { id: 'default', name: 'Стандартная', desc: 'Классический синий интерфейс', color: 'bg-slate-100' },
+               { id: 'paper', name: 'Винтажная бумага', desc: 'Теплые тона и классический шрифт', color: 'bg-[#f9f4e8]' },
+               { id: 'forest', name: 'Таинственный лес', desc: 'Глубокие зеленые тона природы', color: 'bg-[#1a2e1a]' },
+               { id: 'cartoon', name: 'Мультфильм', desc: 'Яркие цвета и жирные контуры', color: 'bg-[#ffeb3b]' }
+            ].map((theme) => (
+               <button
+                  key={theme.id}
+                  onClick={() => {
+                     if (currentOrg) {
+                        const updatedOrg = { ...currentOrg, theme: theme.id as any };
+                        onUpdateOrg(updatedOrg);
+                        db.updateOrganization(currentOrg.id, { theme: theme.id });
+                     }
+                  }}
+                  className={`p-4 rounded-2xl border-2 transition-all text-left group relative overflow-hidden ${
+                     (currentOrg?.theme || 'default') === theme.id 
+                        ? 'border-indigo-600 ring-4 ring-indigo-50 dark:ring-indigo-900/20' 
+                        : 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
+                  }`}
+               >
+                  <div className={`w-full h-12 rounded-lg mb-3 ${theme.color} flex items-center justify-center`}>
+                     <div className="w-1/2 h-2 bg-slate-300 dark:bg-slate-600 rounded-full opacity-50"></div>
+                  </div>
+                  <p className="font-black text-xs text-slate-900 dark:text-slate-50 uppercase tracking-wider">{theme.name}</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">{theme.desc}</p>
+                  
+                  {(currentOrg?.theme || 'default') === theme.id && (
+                     <div className="absolute top-2 right-2 bg-indigo-600 text-white p-1 rounded-full">
+                        <Check className="w-3 h-3" />
+                     </div>
+                  )}
+               </button>
+            ))}
+         </div>
+      </section>
+
+      <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20 relative overflow-hidden">
+         <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-orange-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Сеть и Прокси</h3>
+         <p className="text-xs text-slate-500 dark:text-slate-400 mb-6 leading-relaxed">
+           Настройки прокси-серверов для стабильной работы в условиях ограниченного доступа к API Supabase и Telegram.
+         </p>
+         <div className="space-y-4">
+            <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-white dark:hover:bg-slate-800 transition-all">
+               <div>
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">Прокси для Supabase</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">Использовать встроенный прокси для запросов к базе данных</p>
+               </div>
+                <div className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer"
+                    checked={currentOrg?.useSupabaseProxy || false}
+                    onChange={(e) => {
+                       if (currentOrg) {
+                          const val = e.target.checked;
+                          onUpdateOrg({ ...currentOrg, useSupabaseProxy: val });
+                          db.updateOrganization(currentOrg.id, { useSupabaseProxy: val });
+                          localStorage.setItem('use_supabase_proxy', String(val));
+                          if (val !== (localStorage.getItem('use_supabase_proxy') === 'true')) {
+                             // This is redundant but ensures local storage is updated
+                          }
+                       }
+                    }}
+                  />
+                  <div className={`w-11 h-6 bg-slate-400 dark:bg-slate-600 border border-slate-500 dark:border-slate-500 rounded-full peer peer-checked:bg-blue-600 peer-checked:border-blue-700 transition-colors after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all ${currentOrg?.useSupabaseProxy ? 'after:translate-x-5' : ''}`}></div>
+               </div>
+            </label>
+
+            <label className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-white dark:hover:bg-slate-800 transition-all">
+               <div>
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">Прокси для Telegram</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">Использовать встроенный прокси для отправки уведомлений</p>
+               </div>
+                <div className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer"
+                    checked={currentOrg?.useTelegramProxy || false}
+                    onChange={(e) => {
+                       if (currentOrg) {
+                          const val = e.target.checked;
+                          onUpdateOrg({ ...currentOrg, useTelegramProxy: val });
+                          db.updateOrganization(currentOrg.id, { useTelegramProxy: val });
+                          localStorage.setItem('use_telegram_proxy', String(val));
+                       }
+                    }}
+                  />
+                  <div className={`w-11 h-6 bg-slate-400 dark:bg-slate-600 border border-slate-500 dark:border-slate-500 rounded-full peer peer-checked:bg-blue-600 peer-checked:border-blue-700 transition-colors after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all ${currentOrg?.useTelegramProxy ? 'after:translate-x-5' : ''}`}></div>
+               </div>
+            </label>
+
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-50 dark:bg-amber-900/20 p-3 rounded-xl border border-amber-100 dark:border-amber-900/30 font-mono">
+               ⚠️ ВНИМАНИЕ: Изменение настройки прокси для Supabase требует перезагрузки страницы (F5) для применения изменений.
+            </p>
+         </div>
+      </section>
+
+      <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20 relative overflow-hidden">
          <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Telegram Уведомления</h3>
          
          <div className="space-y-6">
@@ -466,7 +726,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                        }
                     }}
                   />
-                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  <div className="w-11 h-6 bg-slate-400 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 shadow-md border border-slate-500 dark:border-transparent"></div>
                </label>
             </div>
 
@@ -503,12 +763,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         />
                         <button 
                            onClick={async () => {
+                              if (!currentOrg.telegramSettings?.enabled) {
+                                alert('TelegramAPI отключен в настройках организации.');
+                                return;
+                              }
                               if (!currentOrg.telegramSettings?.botToken) {
                                  alert('Сначала введите Bot Token');
                                  return;
                               }
                               try {
-                                 const res = await fetch(`https://api.telegram.org/bot${currentOrg.telegramSettings.botToken}/getUpdates`);
+                                 const res = await fetch(getTelegramUrl(currentOrg.telegramSettings.botToken, 'getUpdates'));
                                  const data = await res.json();
                                  if (data.ok && data.result.length > 0) {
                                     const lastMsg = data.result[data.result.length - 1];
@@ -524,8 +788,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                  } else {
                                     alert('Нет обновлений. Напишите боту сообщение и попробуйте снова.');
                                  }
-                              } catch (e) {
-                                 alert('Ошибка при запросе к Telegram API');
+                              } catch (e: any) {
+                                 console.error('Telegram API Error:', e);
+                                 let msg = 'Ошибка при запросе к Telegram API';
+                                 if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
+                                    msg = 'Не удалось связаться с Telegram API. Возможно, доступ заблокирован вашим провайдером или расширением браузера (AdBlock).';
+                                 }
+                                 alert(msg);
                               }
                            }}
                            className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-black uppercase hover:bg-slate-200 dark:hover:bg-slate-700"
@@ -569,27 +838,163 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <div>
                      <button 
                         onClick={async () => {
+                           if (!currentOrg.telegramSettings?.enabled) {
+                              alert('TelegramAPI отключен в настройках организации.');
+                              return;
+                           }
                            if (!currentOrg.telegramSettings?.botToken || !currentOrg.telegramSettings?.chatId) {
                               alert('Заполните все поля');
                               return;
                            }
                            try {
-                              const res = await fetch(`https://api.telegram.org/bot${currentOrg.telegramSettings.botToken}/sendMessage`, {
-                                 method: 'POST',
-                                 headers: { 'Content-Type': 'application/json' },
-                                 body: JSON.stringify({
+                              const res = await fetch(getTelegramUrl(currentOrg.telegramSettings.botToken, 'sendMessage'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
                                     chat_id: currentOrg.telegramSettings.chatId,
                                     text: '🔔 Тестовое уведомление от WorkTracker Pro'
-                                 })
+                                })
                               });
                               const data = await res.json();
                               if (data.ok) {
+                                alert('Сообщение отправлено!');
+                              } else {
+                                alert('Ошибка отправки: ' + data.description);
+                              }
+                           } catch (e: any) {
+                              if (e.name === 'TypeError' && e.message === 'Failed to fetch') {
+                                 alert('Ошибка сети: Не удалось связаться с Telegram. Проверьте интернет-соединение или отключите блокировщик рекламы.');
+                              } else {
+                                 alert('Ошибка сети: ' + e.message);
+                              }
+                           }
+                        }}
+                        className="w-full py-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all flex items-center justify-center gap-2"
+                     >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                        Отправить тестовое сообщение
+                     </button>
+                  </div>
+               </div>
+            )}
+         </div>
+      </section>
+
+      <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20 relative overflow-hidden">
+         <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Max Messenger Уведомления</h3>
+         
+         <div className="space-y-6">
+            <div className="flex items-center justify-between">
+               <div>
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">Интеграция с Max Messenger</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Получать уведомления через Max Messenger</p>
+               </div>
+               <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer"
+                    checked={currentOrg?.maxSettings?.enabled || false}
+                    onChange={(e) => {
+                       const newSettings = {
+                          ...(currentOrg?.maxSettings || { botToken: '', chatId: '' }),
+                          enabled: e.target.checked
+                       };
+                       if (currentOrg) {
+                          onUpdateOrg({ ...currentOrg, maxSettings: newSettings });
+                          db.updateOrganization(currentOrg.id, { maxSettings: newSettings });
+                       }
+                    }}
+                  />
+                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+               </label>
+            </div>
+
+            {currentOrg?.maxSettings?.enabled && (
+               <div className="grid grid-cols-1 gap-4 animate-fadeIn">
+                  <div>
+                     <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Bot Token</label>
+                     <input 
+                        type="text" 
+                        value={currentOrg.maxSettings.botToken}
+                        onChange={(e) => {
+                           const newSettings = { ...currentOrg.maxSettings!, botToken: e.target.value };
+                           onUpdateOrg({ ...currentOrg, maxSettings: newSettings });
+                           db.updateOrganization(currentOrg.id, { maxSettings: newSettings });
+                        }}
+                        placeholder="Введите Bot Token"
+                        className="w-full border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 dark:text-slate-100 outline-none focus:border-blue-500"
+                     />
+                  </div>
+                  <div>
+                     <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Chat ID</label>
+                     <input 
+                        type="text" 
+                        value={currentOrg.maxSettings.chatId}
+                        onChange={(e) => {
+                             const newSettings = { ...currentOrg.maxSettings!, chatId: e.target.value };
+                             onUpdateOrg({ ...currentOrg, maxSettings: newSettings });
+                             db.updateOrganization(currentOrg.id, { maxSettings: newSettings });
+                        }}
+                        placeholder="Введите Chat ID"
+                        className="w-full border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 dark:text-slate-100 outline-none focus:border-blue-500"
+                     />
+                  </div>
+                  
+                  <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
+                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Типы уведомлений</p>
+                     
+                     {[
+                        { key: 'notifyOnShiftStart', label: 'Начало смены' },
+                        { key: 'notifyOnShiftEnd', label: 'Конец смены' },
+                        { key: 'notifyOnLimitExceeded', label: 'Превышение лимита (более 15 минут)' }
+                     ].map(pref => (
+                        <div key={pref.key} className="flex items-center justify-between">
+                           <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{pref.label}</span>
+                           <label className="relative inline-flex items-center cursor-pointer scale-75">
+                              <input 
+                                 type="checkbox" 
+                                 className="sr-only peer"
+                                 checked={(currentOrg.maxSettings as any)?.[pref.key] ?? true}
+                                 onChange={(e) => {
+                                    const newSettings = { 
+                                       ...currentOrg.maxSettings!, 
+                                       [pref.key]: e.target.checked 
+                                    };
+                                    onUpdateOrg({ ...currentOrg, maxSettings: newSettings });
+                                    db.updateOrganization(currentOrg.id, { maxSettings: newSettings });
+                                 }}
+                              />
+                              <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                           </label>
+                        </div>
+                     ))}
+                  </div>
+
+                  <div>
+                     <button 
+                        onClick={async () => {
+                           if (!currentOrg.maxSettings?.botToken || !currentOrg.maxSettings?.chatId) {
+                              alert('Заполните все поля');
+                              return;
+                           }
+                           try {
+                              const res = await fetch('/api/max/send', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({
+                                    botToken: currentOrg.maxSettings.botToken,
+                                    chatId: currentOrg.maxSettings.chatId,
+                                    message: '🔔 Тестовое уведомление от WorkTracker Pro (Max Messenger)'
+                                 })
+                              });
+                              const data = await res.json();
+                              if (data.success) {
                                  alert('Сообщение отправлено!');
                               } else {
-                                 alert('Ошибка отправки: ' + data.description);
+                                 alert('Ошибка отправки: ' + data.error);
                               }
-                           } catch (e) {
-                              alert('Ошибка сети: ' + (e as any).message);
+                           } catch (e: any) {
+                              alert('Ошибка сети: ' + e.message);
                            }
                         }}
                         className="w-full py-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all flex items-center justify-center gap-2"
@@ -651,6 +1056,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 }
               }} className="px-6 py-3 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase disabled:bg-slate-300">Добавить</button>
           </div>
+          
+          {isMachineLimitReached && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-2xl border border-blue-100 dark:border-blue-800 text-center space-y-3 mb-6">
+              <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 leading-tight">Достигнут лимит оборудования для тарифа {currentOrg?.plan}</p>
+              <button onClick={() => setViewMode ? setViewMode('billing') : window.location.href='#pricing'} className="w-full py-3 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl dark:shadow-slate-900/20 shadow-blue-200">Расширить лимит</button>
+            </div>
+          )}
           
           <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
             {machines.map(m => (
@@ -781,13 +1193,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20">
-        <h3 className="font-black text-slate-900 dark:text-slate-50 mb-6 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Реквизиты организации</h3>
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="font-black text-slate-900 dark:text-slate-50 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest">Реквизиты организации</h3>
+          <button 
+            onClick={async () => {
+              if (currentOrg) {
+                try {
+                  const { error } = await db.updateOrganization(currentOrg.id, { clientRequisites: currentOrg.clientRequisites });
+                  if (error) throw error;
+                  alert('Реквизиты успешно сохранены!');
+                } catch (err: any) {
+                  alert('Ошибка при сохранении: ' + (err.message || err));
+                }
+              }
+            }}
+            className="px-6 py-2 bg-blue-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 dark:shadow-none"
+          >
+            Сохранить реквизиты
+          </button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <input placeholder="Название организации" value={currentOrg?.clientRequisites?.name || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, name: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200" />
-          <input placeholder="ИНН" value={currentOrg?.clientRequisites?.inn || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, inn: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200" />
-          <input placeholder="КПП" value={currentOrg?.clientRequisites?.kpp || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, kpp: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200" />
-          <input placeholder="Адрес" value={currentOrg?.clientRequisites?.address || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, address: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200 md:col-span-2" />
-          <textarea placeholder="Банковские реквизиты" value={currentOrg?.clientRequisites?.bankDetails || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, bankDetails: e.target.value } as any })} className="p-3 bg-slate-50 rounded-xl border border-slate-200 md:col-span-2" />
+          <input placeholder="Название организации" value={currentOrg?.clientRequisites?.name || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, name: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+          <input placeholder="ИНН" value={currentOrg?.clientRequisites?.inn || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, inn: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+          <input placeholder="КПП" value={currentOrg?.clientRequisites?.kpp || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, kpp: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+          <input placeholder="Адрес" value={currentOrg?.clientRequisites?.address || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, address: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <input placeholder="Наименование банка" value={currentOrg?.clientRequisites?.bankName || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, bankName: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+          <input placeholder="БИК" value={currentOrg?.clientRequisites?.bik || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, bik: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+          <input placeholder="Кор.счет" value={currentOrg?.clientRequisites?.corrAccount || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, corrAccount: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
+          <input placeholder="Расч.счет" value={currentOrg?.clientRequisites?.settlementAccount || ''} onChange={e => onUpdateOrg({ ...currentOrg!, clientRequisites: { ...currentOrg?.clientRequisites, settlementAccount: e.target.value } as any })} className="p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100" />
         </div>
       </section>
 
@@ -812,34 +1248,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <h3 className="font-black mb-6 flex items-center gap-2 underline decoration-blue-500 decoration-4 underline-offset-8 uppercase text-xs tracking-widest relative z-10">Инструкция и техподдержка</h3>
         
         <div className="space-y-6 relative z-10">
-          <div>
-            <h4 className="text-sm font-bold mb-2 text-blue-400">Блок отладки (Debug Block)</h4>
-            <p className="text-xs text-slate-300 leading-relaxed mb-4">
-              Специальный раздел в нижней части экрана для технического обслуживания. Если он вам не виден, его может включить Глобальный администратор.
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 bg-white/5 rounded-2xl border border-white/10">
-                <p className="text-[10px] font-black uppercase text-blue-400 mb-2">Функции исправления:</p>
-                <ul className="text-[10px] space-y-2 text-slate-300">
-                  <li>• <b className="text-white">Очистить кэш</b>: Полный сброс локальных данных (лечит 90% проблем интерфейса).</li>
-                  <li>• <b className="text-white">Диагностика БД</b>: Проверка целостности данных в облаке.</li>
-                  <li>• <b className="text-white">Объединить дубликаты</b>: Слияние повторных записей сотрудников.</li>
-                  <li>• <b className="text-white">Обновить из БД</b>: Принудительная синхронизация с сервером.</li>
-                </ul>
-              </div>
-              <div className="p-4 bg-white/5 rounded-2xl border border-white/10">
-                <p className="text-[10px] font-black uppercase text-blue-400 mb-2">Когда использовать:</p>
-                <ul className="text-[10px] space-y-2 text-slate-300">
-                  <li>• Если данные "зависли" или не отображаются изменения.</li>
-                  <li>• При расхождениях в зарплатах (используйте "Принудительная очистка $").</li>
-                  <li>• По запросу технической поддержки (используйте кнопку "Copy").</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
           <div className="pt-4 border-t border-white/10">
-            <p className="text-[10px] text-slate-400 italic">
+            <p className="text-[10px] text-slate-400 italic text-center">
               Для получения полной инструкции по всем разделам приложения, обратитесь к файлу README.md в корне проекта или в чат поддержки.
             </p>
           </div>

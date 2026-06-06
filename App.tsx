@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState, Suspense, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, Suspense, useCallback, useRef } from 'react';
 import { UserRole, PlanType, PositionConfig, User, WorkLog } from './types';
 import { STORAGE_KEYS, DEFAULT_PERMISSIONS, PLAN_LIMITS } from './constants';
-import { sendNotification, calculateMinutes, sendTelegramNotification } from './utils';
+import { sendNotification, calculateMinutes, sendTelegramNotification, cleanValue } from './utils';
 import { supabase, db } from './lib/supabase';
 import Layout from './components/Layout';
 import LoadingScreen from './components/LoadingScreen';
@@ -13,6 +13,7 @@ import { useAuth } from './hooks/useAuth';
 
 import { useTimeSync } from './hooks/useTimeSync';
 import { PaymentSuccess } from './components/PaymentSuccess';
+import { OnboardingTour } from './components/OnboardingTour';
 
 // Lazy load heavy components
 const EmployeeView = React.lazy(() => import('./components/EmployeeView'));
@@ -46,7 +47,32 @@ const App: React.FC = () => {
   const [employeeViewMode, setEmployeeViewMode] = useState<'control' | 'matrix'>('control');
   const [unreadSupportMessages, setUnreadSupportMessages] = useState(0);
   const [unreadByOrg, setUnreadByOrg] = useState<Record<string, number>>({});
+  const [activeSupportOrgId, setActiveSupportOrgId] = useState<string | null>(null);
+  const activeSupportOrgIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeSupportOrgIdRef.current = activeSupportOrgId;
+  }, [activeSupportOrgId]);
   const [superAdminTab, setSuperAdminTab] = useState<string>('orgs');
+
+  // Global Error Handling for "Failed to fetch"
+  useEffect(() => {
+    const handleError = (event: PromiseRejectionEvent | ErrorEvent) => {
+      const error = 'reason' in event ? event.reason : event.error;
+      if (error && (error.message === 'Failed to fetch' || error.name === 'TypeError' && error.message.includes('fetch'))) {
+        console.warn('🌐 Network Error detected:', error);
+        // We don't want to alert on every single fetch failure (like background pings)
+        // but we should log it clearly.
+      }
+    };
+
+    window.addEventListener('unhandledrejection', handleError);
+    window.addEventListener('error', handleError);
+    return () => {
+      window.removeEventListener('unhandledrejection', handleError);
+      window.removeEventListener('error', handleError);
+    };
+  }, []);
 
   // Birthday Notification
   useEffect(() => {
@@ -73,9 +99,31 @@ const App: React.FC = () => {
     }
   }, [appData.users]);
 
+  // Sync proxy settings from organization to localStorage
+  useEffect(() => {
+    if (appData.currentOrg) {
+      if (appData.currentOrg.useSupabaseProxy !== undefined) {
+        const stored = localStorage.getItem('use_supabase_proxy');
+        const orgVal = String(!!appData.currentOrg.useSupabaseProxy);
+        if (stored !== orgVal) {
+          localStorage.setItem('use_supabase_proxy', orgVal);
+        }
+      }
+      if (appData.currentOrg.useTelegramProxy !== undefined) {
+        const stored = localStorage.getItem('use_telegram_proxy');
+        const orgVal = String(!!appData.currentOrg.useTelegramProxy);
+        if (stored !== orgVal) {
+          localStorage.setItem('use_telegram_proxy', orgVal);
+        }
+      }
+    }
+  }, [appData.currentOrg]);
+
   const handleResetUnread = useCallback(async (orgId?: string) => {
     const now = new Date().toISOString();
     const isSuperAdmin = auth.currentUser?.role === UserRole.SUPER_ADMIN;
+    
+    setActiveSupportOrgId(orgId || null);
 
     if (isSuperAdmin) {
       const lastReadMapStr = localStorage.getItem('last_read_support_superadmin');
@@ -97,6 +145,9 @@ const App: React.FC = () => {
           await supabase.from('users').upsert({
             id: 'super-admin-meta',
             name: 'Super Admin Meta',
+            role: 'EMPLOYEE',
+            position: 'System',
+            pin: '0000',
             organization_id: 'admin',
             telegram_settings: { lastReadMap }
           });
@@ -129,6 +180,17 @@ const App: React.FC = () => {
     return unreadSupportMessages;
   }, [unreadSupportMessages, unreadByOrg, auth.currentUser]);
 
+  const superAdminTabRef = useRef(superAdminTab);
+  const employerViewModeRef = useRef(employerViewMode);
+
+  useEffect(() => {
+    superAdminTabRef.current = superAdminTab;
+  }, [superAdminTab]);
+
+  useEffect(() => {
+    employerViewModeRef.current = employerViewMode;
+  }, [employerViewMode]);
+
   // Reset unread count when entering support view
   useEffect(() => {
     const isSuperAdmin = auth.currentUser?.role === UserRole.SUPER_ADMIN;
@@ -138,6 +200,8 @@ const App: React.FC = () => {
       // This is handled by SupportChat calling handleResetUnread(orgId)
     } else if (employerViewMode === 'support' && auth.currentUser) {
       handleResetUnread();
+    } else {
+      setActiveSupportOrgId(null);
     }
   }, [employerViewMode, auth.currentUser, handleResetUnread]);
 
@@ -146,78 +210,96 @@ const App: React.FC = () => {
     if (auth.currentUser?.role === UserRole.SUPER_ADMIN && superAdminTab === 'support') {
       // When entering support tab, we might want to refresh unread counts
       // but not necessarily reset them until an org is selected
+    } else {
+      setActiveSupportOrgId(null);
     }
   }, [superAdminTab, auth.currentUser]);
 
   // Fetch initial unread count
   useEffect(() => {
     const fetchInitialUnread = async () => {
-      if (!auth.currentUser) return;
-      const orgId = auth.currentUser.organizationId;
-      const isSuperAdmin = auth.currentUser.role === UserRole.SUPER_ADMIN;
-
-      if (isSuperAdmin) {
-        // Try to fetch from DB first
-        let lastReadMap = {};
-        try {
-          const { data: metaUser } = await supabase.from('users').select('telegram_settings').eq('id', 'super-admin-meta').maybeSingle();
-          if (metaUser?.telegram_settings?.lastReadMap) {
-            lastReadMap = metaUser.telegram_settings.lastReadMap;
-            localStorage.setItem('last_read_support_superadmin', JSON.stringify(lastReadMap));
-          } else {
-            const lastReadMapStr = localStorage.getItem('last_read_support_superadmin');
-            lastReadMap = lastReadMapStr ? JSON.parse(lastReadMapStr) : {};
-          }
-        } catch (e) {
-          const lastReadMapStr = localStorage.getItem('last_read_support_superadmin');
-          lastReadMap = lastReadMapStr ? JSON.parse(lastReadMapStr) : {};
-        }
-        
-        // Fetch all messages not from super admin
-        const { data, error } = await supabase
-          .from('support_messages')
-          .select('organization_id, created_at')
-          .neq('sender_id', auth.currentUser.id);
-          
-        if (!error && data) {
-          const unreadCounts: Record<string, number> = {};
-          data.forEach(msg => {
-            const org = msg.organization_id;
-            const lastRead = (lastReadMap as any)[org];
-            if (!lastRead || new Date(msg.created_at) > new Date(lastRead)) {
-              unreadCounts[org] = (unreadCounts[org] || 0) + 1;
-            }
-          });
-          setUnreadByOrg(unreadCounts);
-        }
-        return;
-      }
-
-      if (!orgId) return;
-
-      // Try to fetch from DB first
-      let lastRead = localStorage.getItem(`last_read_support_${orgId}`);
       try {
-        const { data: dbUser } = await supabase.from('users').select('telegram_settings').eq('id', auth.currentUser.id).maybeSingle();
-        if (dbUser?.telegram_settings?.lastSupportReadAt) {
-          lastRead = dbUser.telegram_settings.lastSupportReadAt;
-          localStorage.setItem(`last_read_support_${orgId}`, lastRead!);
+        if (!auth.currentUser) return;
+        const orgId = auth.currentUser.organizationId;
+        const isSuperAdmin = auth.currentUser.role === UserRole.SUPER_ADMIN;
+
+        if (isSuperAdmin) {
+          // Try to fetch from DB first
+          let lastReadMap: Record<string, string> = {};
+          
+          // Get local first
+          const lastReadMapStr = localStorage.getItem('last_read_support_superadmin');
+          const localMap: Record<string, string> = lastReadMapStr ? JSON.parse(lastReadMapStr) : {};
+
+          try {
+            const { data: metaUser } = await supabase.from('users').select('telegram_settings').eq('id', 'super-admin-meta').maybeSingle();
+            let dbMap = metaUser?.telegram_settings?.lastReadMap || {};
+            
+            // Merge taking the latest date
+            lastReadMap = { ...localMap };
+            Object.keys(dbMap).forEach(orgId => {
+              if (!lastReadMap[orgId] || new Date(dbMap[orgId]) > new Date(lastReadMap[orgId])) {
+                lastReadMap[orgId] = dbMap[orgId];
+              }
+            });
+            
+            localStorage.setItem('last_read_support_superadmin', JSON.stringify(lastReadMap));
+          } catch (e) {
+            lastReadMap = localMap;
+          }
+          
+          // Fetch all messages not from super admin
+          const { data, error } = await supabase
+            .from('support_messages')
+            .select('organization_id, created_at')
+            .neq('sender_id', auth.currentUser.id);
+            
+          if (!error && data) {
+            const unreadCounts: Record<string, number> = {};
+            data.forEach(msg => {
+              const org = msg.organization_id;
+              const lastRead = (lastReadMap as any)[org];
+              if (!lastRead || new Date(msg.created_at) > new Date(lastRead)) {
+                unreadCounts[org] = (unreadCounts[org] || 0) + 1;
+              }
+            });
+            setUnreadByOrg(unreadCounts);
+          }
+          return;
         }
-      } catch (e) {}
-      
-      let query = supabase
-        .from('support_messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('organization_id', orgId)
-        .neq('sender_id', auth.currentUser.id);
 
-      if (lastRead) {
-        query = query.gt('created_at', lastRead);
-      }
+        if (!orgId) return;
 
-      const { count, error } = await query;
-      if (!error && count !== null) {
-        setUnreadSupportMessages(count);
+        // Try to fetch from DB first
+        let lastRead = localStorage.getItem(`last_read_support_${orgId}`);
+        try {
+          const { data: dbUser } = await supabase.from('users').select('telegram_settings').eq('id', auth.currentUser.id).maybeSingle();
+          if (dbUser?.telegram_settings?.lastSupportReadAt) {
+            lastRead = dbUser.telegram_settings.lastSupportReadAt;
+            localStorage.setItem(`last_read_support_${orgId}`, lastRead!);
+          }
+        } catch (e) {}
+        
+        let query = supabase
+          .from('support_messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', orgId)
+          .neq('sender_id', auth.currentUser.id);
+
+        if (lastRead) {
+          query = query.gt('created_at', lastRead);
+        }
+
+        const { count, error } = await query;
+        if (!error && count !== null) {
+          setUnreadSupportMessages(count);
+        }
+      } catch (e: any) {
+        if (e.message === 'Failed to fetch') {
+          console.warn('🌐 fetchInitialUnread: Network error (Failed to fetch)');
+        } else {
+          console.error('❌ fetchInitialUnread error:', e);
+        }
       }
     };
 
@@ -251,22 +333,26 @@ const App: React.FC = () => {
 
           // Check if message belongs to this org or if user is super admin
           if (isSuperAdmin || newMessage.organization_id === orgId) {
-            // For super admin, we always track per-org unread messages 
-            // unless they are currently viewing that specific org in support
-            if (isSuperAdmin && newMessage.organization_id) {
-              if (superAdminTab !== 'support') {
+            // Only increment unread if NOT currently viewing this specific chat
+            const isViewingThisChat = 
+              (isSuperAdmin && superAdminTabRef.current === 'support' && activeSupportOrgIdRef.current === newMessage.organization_id) ||
+              (!isSuperAdmin && employerViewModeRef.current === 'support');
+
+            if (!isViewingThisChat) {
+              if (isSuperAdmin && newMessage.organization_id) {
                 setUnreadByOrg(prev => ({
                   ...prev,
                   [newMessage.organization_id]: (prev[newMessage.organization_id] || 0) + 1
                 }));
+              } else {
+                setUnreadSupportMessages(prev => prev + 1);
               }
-            } else if (employerViewMode !== 'support') {
-              setUnreadSupportMessages(prev => prev + 1);
-            }
 
-            if (employerViewMode !== 'support' && (!isSuperAdmin || superAdminTab !== 'support')) {
               // Optional: browser notification
               sendNotification('Новое сообщение в техподдержке', newMessage.message);
+            } else {
+              // We ARE viewing this chat currently. Update read status so it's not marked unread on reload.
+              handleResetUnread(isSuperAdmin ? newMessage.organization_id : undefined);
             }
           }
         }
@@ -276,11 +362,11 @@ const App: React.FC = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [auth.currentUser, employerViewMode, superAdminTab]);
+  }, [auth.currentUser]);
 
   const userPermissions = useMemo(() => {
     if (!auth.currentUser) return DEFAULT_PERMISSIONS;
-    if (auth.currentUser.id === 'admin') return { ...DEFAULT_PERMISSIONS, isFullAdmin: true };
+    if (cleanValue(auth.currentUser.id) === 'admin') return { ...DEFAULT_PERMISSIONS, isFullAdmin: true };
     const pos = appData.positions.find((p: PositionConfig) => p.name === auth.currentUser!.position);
     return pos?.permissions || DEFAULT_PERMISSIONS;
   }, [auth.currentUser, appData.positions]);
@@ -288,7 +374,7 @@ const App: React.FC = () => {
   const isSelectedUserAdmin = useMemo(() => {
     const user = auth.selectedLoginUser;
     if (!user) return false;
-    if (user.id === 'admin') return true;
+    if (cleanValue(user.id) === 'admin') return true;
     const pos = appData.positions.find((p: PositionConfig) => p.name === user.position);
     return (pos?.permissions?.isFullAdmin || pos?.permissions?.isLimitedAdmin) ?? false;
   }, [auth.selectedLoginUser, appData.positions]);
@@ -296,7 +382,7 @@ const App: React.FC = () => {
   // Check if current user is archived
   useEffect(() => {
     if (auth.currentUser) {
-      const user = appData.users.find(u => u.id === auth.currentUser?.id);
+      const user = appData.users.find(u => cleanValue(u.id) === cleanValue(auth.currentUser?.id));
       if (user && user.isArchived) {
         auth.handleLogout();
         alert('Ваш аккаунт был заблокирован.');
@@ -337,12 +423,14 @@ const App: React.FC = () => {
       
       const now = getNow();
       const botToken = appData.currentOrg!.telegramSettings!.botToken;
+      const currentUserId = auth.currentUser ? cleanValue(auth.currentUser.id) : null;
       
-      for (const [userId, shifts] of Object.entries(appData.activeShiftsMap)) {
+      for (const [rawUserId, shifts] of Object.entries(appData.activeShiftsMap)) {
+        const userId = cleanValue(rawUserId);
         // Prevent other employees' stale devices from sending notifications for this user
-        if (userId !== auth.currentUser?.id && !isEmployerAuthorized) continue;
+        if (userId !== currentUserId && !isEmployerAuthorized) continue;
 
-        const user = appData.users.find((u: User) => u.id === userId);
+        const user = appData.users.find((u: User) => cleanValue(u.id) === userId);
         if (!user) continue;
 
         const positionConfig = appData.positions.find((p: PositionConfig) => p.name === user.position);
@@ -408,10 +496,11 @@ const App: React.FC = () => {
               userShiftsChanged = true;
               continue;
             } else if (!data) {
-              // If the shift ID is NOT in the work_logs table at all, and it's older than 2 hours, it's a ghost
+              // DANGER: If the shift ID is NOT in the work_logs table, it might still be in the sync queue!
+              // We only clean up if it's REALLY old (e.g. > 12 hours) to be safe.
               const ageMinutes = calculateMinutes(shift.checkIn, now.toISOString());
-              if (ageMinutes > 120) {
-                console.log(`🧹 Cleaning up ghost shift (not in DB logs) for ${user.name}`);
+              if (ageMinutes > 720) { // 12 hours threshold for ghost shifts
+                console.log(`🧹 Cleaning up ghost shift (not in DB logs after 12h) for ${user.name}`);
                 nextUserShifts[slot] = null;
                 userShiftsChanged = true;
                 continue;
@@ -434,13 +523,13 @@ const App: React.FC = () => {
               // 1. Notify Employee
               if (user.telegramChatId && (user.telegramSettings?.notifyOnLimitExceeded ?? true)) {
                  const msg = `⚠️ <b>Внимание!</b>\nВы забыли закрыть смену!\n⏱ Длительность: ${Math.floor(duration / 60)}ч ${duration % 60}м\nПожалуйста, закройте смену в приложении.`;
-                 sendTelegramNotification(botToken, user.telegramChatId, msg);
+                 sendTelegramNotification(botToken, user.telegramChatId, msg, appData.currentOrg?.telegramSettings?.enabled);
               }
 
               // 2. Notify Admin (Organization Chat)
               if (appData.currentOrg?.telegramSettings?.chatId) {
                  const msg = `⚠️ <b>Просроченная смена</b>\n👤 Сотрудник: ${user.name}\n⏱ Длительность: ${Math.floor(duration / 60)}ч ${duration % 60}м\nЛимит: ${Math.floor(maxDuration / 60)}ч`;
-                 sendTelegramNotification(botToken, appData.currentOrg.telegramSettings.chatId, msg);
+                 sendTelegramNotification(botToken, appData.currentOrg.telegramSettings.chatId, msg, appData.currentOrg?.telegramSettings?.enabled);
               }
 
               // Update last notified timestamp in the shift object
@@ -493,19 +582,21 @@ const App: React.FC = () => {
       const now = getNow();
       const updates: WorkLog[] = [];
       const shiftUpdates: Record<string, any> = {};
+      const currentUserId = auth.currentUser ? cleanValue(auth.currentUser.id) : null;
 
-      for (const [userId, shifts] of Object.entries(appData.activeShiftsMap)) {
+      for (const [rawUserId, shifts] of Object.entries(appData.activeShiftsMap)) {
+        const userId = cleanValue(rawUserId);
         // Only process if it's the current user, OR if the current user is an employer
-        if (userId !== auth.currentUser?.id && !isEmployerAuthorized) continue;
+        if (userId !== currentUserId && !isEmployerAuthorized) continue;
 
-        const user = appData.users.find(u => u.id === userId);
+        const user = appData.users.find(u => cleanValue(u.id) === userId);
         if (!user) continue;
         
         const pos = appData.positions.find((p: PositionConfig) => p.name === user.position);
         const maxDuration = pos?.permissions.maxShiftDurationMinutes || appData.currentOrg!.maxShiftDuration || 720;
         
-        // Threshold: Max + 120 mins (give client more time to handle it first)
-        const threshold = maxDuration + 120;
+        // Threshold: use maxDuration strictly as requested by user
+        const threshold = maxDuration;
 
         const userShifts = shifts as Record<string, any>;
         if (!userShifts) continue;
@@ -540,9 +631,10 @@ const App: React.FC = () => {
                 userChanged = true;
                 continue;
               } else if (!data) {
-                // If not in DB logs and older than 4 hours, kill it
+                // DANGER: If not in DB logs yet, might be in sync queue.
+                // We only kill it if it's very old (> 18 hours for lazy cleanup)
                 const ageMinutes = calculateMinutes(shift.checkIn, now.toISOString());
-                if (ageMinutes > 240) {
+                if (ageMinutes > 1080) { // 18 hours
                   nextUserShifts[slot] = null;
                   userChanged = true;
                   continue;
@@ -581,9 +673,9 @@ const App: React.FC = () => {
               const machineName = shift.machineId ? appData.machines.find((m: any) => m.id === shift.machineId)?.name || 'Работа' : 'Работа';
               const msg = `⛔️ <b>Авто-закрытие (Lazy)</b>\n👤 Сотрудник: ${user.name}\n📍 Позиция: ${user.position}\n🔧 Слот: ${slot} (${machineName})\n⚠️ Причина: Превышен лимит времени (серверная очистка)`;
               
-              sendTelegramNotification(appData.currentOrg.telegramSettings.botToken, appData.currentOrg.telegramSettings.chatId, msg);
+              sendTelegramNotification(appData.currentOrg.telegramSettings.botToken, appData.currentOrg.telegramSettings.chatId, msg, appData.currentOrg?.telegramSettings?.enabled);
               if (user.telegramChatId && (user.telegramSettings?.notifyOnLimitExceeded ?? true)) {
-                 sendTelegramNotification(appData.currentOrg.telegramSettings.botToken, user.telegramChatId, msg);
+                 sendTelegramNotification(appData.currentOrg.telegramSettings.botToken, user.telegramChatId, msg, appData.currentOrg?.telegramSettings?.enabled);
               }
 
               // Update last cleanup alert timestamp in DB for legacy tracking
@@ -620,9 +712,19 @@ const App: React.FC = () => {
 
   }, [isEmployerAuthorized, auth.currentUser?.id, appData.currentOrg, appData.activeShiftsMap, appData.users, appData.positions, getNow]);
 
+  // Handle external registration links
+  useEffect(() => {
+    if (window.location.search.includes('action=register') && !auth.currentUser) {
+      setShowRegistration(true);
+      if (auth.showLanding) auth.setShowLanding(false);
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [auth.currentUser, auth.showLanding]);
+
   const activeUser = useMemo(() => {
     if (!auth.currentUser) return null;
-    const dbUser = appData.users.find(u => u.id === auth.currentUser!.id);
+    const dbUser = appData.users.find(u => cleanValue(u.id) === cleanValue(auth.currentUser!.id));
     if (!dbUser) return auth.currentUser;
     // Merge database data with current session role (important for admin role switching)
     return { ...dbUser, role: auth.currentUser.role };
@@ -636,6 +738,7 @@ const App: React.FC = () => {
     return (
       <Suspense fallback={<LoadingScreen />}>
         <SuperAdminView 
+          currentUser={auth.currentUser}
           onLogout={auth.handleLogout} 
           unreadSupportMessages={totalUnread}
           unreadByOrg={unreadByOrg}
@@ -740,9 +843,10 @@ const App: React.FC = () => {
               logs={appData.logs} 
               logsLookup={appData.logsLookup}
               onLogsUpsert={appData.handleLogsUpsert} 
-              activeShifts={appData.activeShiftsMap[auth.currentUser.id] || { 1: null, 2: null, 3: null }}
+              activeShifts={appData.activeShiftsMap[cleanValue(auth.currentUser.id)] || { 1: null, 2: null, 3: null }}
               activeShiftsMap={appData.activeShiftsMap}
-              onActiveShiftsUpdate={(shifts: any) => appData.handleActiveShiftsUpdate(auth.currentUser!.id, shifts)}
+              users={appData.users}
+              onActiveShiftsUpdate={(shifts: any) => appData.handleActiveShiftsUpdate(cleanValue(auth.currentUser!.id), shifts)}
               onOvertime={(user: any, slot: any) => {
                 if (appData.currentOrg?.notificationSettings?.onOvertime) {
                   sendNotification('Превышение лимита', `Сотрудник ${user.name} превысил лимит времени смены.`);
@@ -849,6 +953,13 @@ const App: React.FC = () => {
             reason={appData.upgradeReason}
             onClose={() => { appData.setUpgradeReason(null); appData.setShowUpgradeModal(false); }}
             onUpgrade={() => { window.location.href = '#pricing'; appData.setUpgradeReason(null); appData.setShowUpgradeModal(false); }}
+          />
+        )}
+
+        {appData.currentOrg && auth.currentUser?.role === UserRole.EMPLOYER && (
+          <OnboardingTour 
+            currentOrg={appData.currentOrg} 
+            onComplete={() => appData.handleRefresh()} 
           />
         )}
 

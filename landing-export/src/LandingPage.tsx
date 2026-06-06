@@ -1,6 +1,7 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { InterfacePreview } from './InterfacePreview';
+import { supabase } from './supabase';
 
 // ЗАМЕНИТЕ ЭТОТ URL НА АДРЕС ВАШЕГО ПРИЛОЖЕНИЯ
 const APP_URL = 'https://work-tracker-pro.vercel.app';
@@ -9,11 +10,69 @@ const LandingPage: React.FC = () => {
   const onStart = () => window.location.href = `${APP_URL}/login`;
   const onRegister = () => window.location.href = `${APP_URL}/register`;
 
-  const displayPlans = [
-    { name: 'Бесплатный', price: 0, features: ['До 3 сотрудников', 'До 2 ед. оборудования', 'Выплаты'] },
-    { name: 'Профессиональный', price: 2900, features: ['До 20 сотрудников', 'До 10 ед. оборудования', 'Фотофиксация', 'Ночные смены', 'Аналитика', 'Зарплата', 'Мониторинг смен', 'Филиалы', 'Журнал аудита'] },
-    { name: 'Бизнес', price: 9900, features: ['Безлимит сотрудников', 'Безлимит оборудования', 'Все функции PRO', 'Персональный менеджер'] }
-  ];
+  const [plans, setPlans] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchPlans() {
+      try {
+        const { data, error } = await supabase
+          .from('plans')
+          .select('*')
+          .order('price', { ascending: true });
+        
+        if (error) throw error;
+        if (data) {
+          const mappedPlans = data.map(plan => {
+            const features = [];
+            
+            // Лимиты
+            if (plan.limits?.maxUsers >= 1000) features.push('Безлимит сотрудников');
+            else features.push(`До ${plan.limits?.maxUsers} сотрудников`);
+            
+            if (plan.limits?.maxMachines >= 1000) features.push('Безлимит оборудования');
+            else features.push(`До ${plan.limits?.maxMachines} ед. оборудования`);
+
+            // Функции
+              if (plan.limits?.features) {
+                const f = plan.limits.features;
+                if (f.photoCapture) features.push('Фотофиксация');
+                if (f.nightShift) features.push('Ночные смены');
+                if (f.advancedAnalytics) features.push('Аналитика');
+                if (f.payroll) features.push('Зарплата');
+                if (f.shiftMonitoring) features.push('Мониторинг смен');
+                if (f.multipleBranches) features.push('Филиалы');
+                if (f.auditLog) features.push('Журнал аудита');
+                if (f.payments) features.push('Выплаты');
+              }
+
+            // Доп. стоимость
+            if (plan.machine_price > 0) features.push(`+1 станок: ${plan.machine_price} ₽/мес`);
+            if (plan.user_price > 0) features.push(`+1 сотрудник: ${plan.user_price} ₽/мес`);
+
+            return {
+              ...plan,
+              displayFeatures: features
+            };
+          });
+          setPlans(mappedPlans);
+        }
+      } catch (err) {
+        console.error('Error fetching plans:', err);
+        // Fallback
+        setPlans([
+          { name: 'Бесплатный', price: 0, displayFeatures: ['До 3 сотрудников', 'До 2 ед. оборудования', 'Выплаты'] },
+          { name: 'Профессиональный', price: 2900, displayFeatures: ['До 20 сотрудников', 'До 10 ед. оборудования', 'Фотофиксация', 'Ночные смены', 'Аналитика'] },
+          { name: 'Бизнес', price: 9900, displayFeatures: ['Безлимит сотрудников', 'Безлимит оборудования', 'Все функции PRO'] }
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchPlans();
+  }, []);
+
+  const displayPlans = plans;
 
   const schemaData = [
     {
@@ -29,17 +88,6 @@ const LandingPage: React.FC = () => {
         "price": plan.price,
         "priceCurrency": "RUB"
       }))
-    },
-    {
-      "@context": "https://schema.org",
-      "@type": "FAQPage",
-      "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "Как внедрить систему учета рабочего времени?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Внедрение WorkTracker PRO занимает от 15 минут." }
-        }
-      ]
     }
   ];
 
@@ -122,25 +170,32 @@ const LandingPage: React.FC = () => {
       <section id="pricing" className="py-10 bg-slate-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <h2 className="text-3xl font-black mb-12 text-center uppercase tracking-tight">Тарифные планы</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {displayPlans.map((plan, i) => (
-              <div key={i} className={`p-8 rounded-[2.5rem] bg-white border-2 ${i === 1 ? 'border-blue-600 shadow-xl' : 'border-slate-100'}`}>
-                <h3 className="text-lg font-black uppercase mb-2">{plan.name}</h3>
-                <div className="text-3xl font-black mb-6">{plan.price} ₽ <span className="text-sm text-slate-400">/ мес</span></div>
-                <ul className="space-y-3 mb-8">
-                  {plan.features.map((f, j) => (
-                    <li key={j} className="text-sm font-medium text-slate-600 flex items-center gap-2">
-                      <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                      {f}
-                    </li>
-                  ))}
-                </ul>
-                <button onClick={onRegister} className={`w-full py-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${i === 1 ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-900 hover:bg-slate-200'}`}>
-                  Выбрать
-                </button>
-              </div>
-            ))}
-          </div>
+          
+          {loading ? (
+            <div className="flex justify-center py-20">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              {displayPlans.map((plan, i) => (
+                <div key={i} className={`p-8 rounded-[2.5rem] bg-white border-2 ${plan.type === 'PRO' ? 'border-blue-600 shadow-xl' : 'border-slate-100'}`}>
+                  <h3 className="text-lg font-black uppercase mb-2">{plan.name}</h3>
+                  <div className="text-3xl font-black mb-6">{plan.price} ₽ <span className="text-sm text-slate-400">/ мес</span></div>
+                  <ul className="space-y-3 mb-8">
+                    {plan.displayFeatures?.map((f: string, j: number) => (
+                      <li key={j} className="text-sm font-medium text-slate-600 flex items-center gap-2">
+                        <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                        {f}
+                      </li>
+                    ))}
+                  </ul>
+                  <button onClick={onRegister} className={`w-full py-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${plan.type === 'PRO' ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-900 hover:bg-slate-200'}`}>
+                    Выбрать
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

@@ -1,7 +1,7 @@
 import React, { memo, useMemo } from 'react';
-import { WorkLog, User, EntryType } from '../../types';
+import { WorkLog, User, EntryType, Organization } from '../../types';
 import { format, isAfter } from 'date-fns';
-import { formatDurationShort, formatDuration, applyRounding } from '../../utils';
+import { formatDurationShort, formatDuration, applyRounding, calculateNightShiftOverlap, calculateMinutes } from '../../utils';
 
 interface UserMatrixRowCellsProps {
   emp: User;
@@ -12,6 +12,7 @@ interface UserMatrixRowCellsProps {
   filterMonth: string;
   setEditingLog: (data: {userId: string, date: string}) => void;
   roundShiftMinutes?: boolean;
+  currentOrg?: Organization | null;
 }
 
 export const UserMatrixRowCells = memo(({ 
@@ -22,7 +23,8 @@ export const UserMatrixRowCells = memo(({
   today, 
   filterMonth, 
   setEditingLog,
-  roundShiftMinutes
+  roundShiftMinutes,
+  currentOrg
 }: UserMatrixRowCellsProps) => {
   const dailyMaxMins = useMemo(() => {
     const logsByDate: Record<string, WorkLog[]> = {};
@@ -43,11 +45,15 @@ export const UserMatrixRowCells = memo(({
       result[date] = applyRounding(maxMins, roundShiftMinutes);
     });
     return result;
-  }, [empLogs]);
+  }, [empLogs, roundShiftMinutes]);
 
   const totalMinutes = useMemo(() => {
     return Object.values(dailyMaxMins).reduce((sum, val) => sum + val, 0);
   }, [dailyMaxMins]);
+
+  const formatTime = (isoString: string) => {
+    return format(new Date(isoString), 'HH:mm');
+  };
 
   return (
     <React.Fragment>
@@ -81,10 +87,48 @@ export const UserMatrixRowCells = memo(({
         const anyNight = dayLogs.some(l => l.isNightShift);
         
         let content: React.ReactNode = null;
+        let tooltipText = '';
+
         if (absence) {
            content = <span className="font-black text-blue-600 dark:text-blue-400">{absence.entryType === EntryType.SICK ? 'Б' : absence.entryType === EntryType.VACATION ? 'О' : 'В'}{anyCorrected && '*'}</span>;
         } else if (hasWork) {
            const isPending = workEntries.some(l => !l.checkOut);
+           
+           tooltipText = workEntries.map(l => {
+             if (!l.checkIn) return 'Нет данных о времени';
+             const startStr = formatTime(l.checkIn);
+             const endStr = l.checkOut ? formatTime(l.checkOut) : '...';
+             let text = `Смена: ${startStr} - ${endStr}`;
+             
+             if (l.checkOut && currentOrg?.autoNightShift) {
+                let actualCheckOut = l.checkOut;
+                let outDate = new Date(actualCheckOut);
+                let inDate = new Date(l.checkIn!);
+                
+                if (outDate < inDate) {
+                  outDate.setDate(outDate.getDate() + 1);
+                  actualCheckOut = outDate.toISOString();
+                } else if (outDate.getTime() - inDate.getTime() > 24 * 60 * 60 * 1000) {
+                  outDate.setDate(outDate.getDate() - 1);
+                  actualCheckOut = outDate.toISOString();
+                }
+                
+                const nightMins = calculateNightShiftOverlap(l.checkIn!, actualCheckOut, currentOrg.nightShiftStart, currentOrg.nightShiftEnd);
+                const totalBaseMins = calculateMinutes(l.checkIn!, actualCheckOut);
+                const dayMins = Math.max(0, totalBaseMins - nightMins);
+                
+                if (nightMins > 0) {
+                  text += `\nДень: ${formatDurationShort(dayMins)} | Ночь: ${formatDurationShort(nightMins)}`;
+                }
+                if (l.durationMinutes > totalBaseMins) {
+                  text += `\nБонус: +${l.durationMinutes - totalBaseMins}м`;
+                }
+             } else if (l.isNightShift) {
+                text += `\nНочная смена`;
+             }
+             return text;
+           }).join('\n\n');
+
            content = (
              <div className="flex flex-col items-center justify-center">
                 <span className={`text-[11px] print:text-[8px] font-black ${isPending ? 'text-blue-500 italic' : 'text-slate-900 dark:text-slate-100'}`}>
@@ -98,7 +142,7 @@ export const UserMatrixRowCells = memo(({
         }
 
         return (
-          <td key={dateStr} onClick={() => setEditingLog({ userId: emp.id, date: dateStr })} className="border-r dark:border-slate-800 p-1 text-center h-12 tabular-nums cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
+          <td key={dateStr} title={tooltipText} onClick={() => setEditingLog({ userId: emp.id, date: dateStr })} className="border-r dark:border-slate-800 p-1 text-center h-12 tabular-nums cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
             {content}
           </td>
         );

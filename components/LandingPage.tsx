@@ -12,6 +12,22 @@ interface LandingPageProps {
 }
 
 const LandingPage: React.FC<LandingPageProps> = ({ onStart, onRegister, plans }) => {
+  const handleStart = () => {
+    if (import.meta.env.VITE_APP_URL) {
+      window.location.href = import.meta.env.VITE_APP_URL;
+    } else {
+      onStart();
+    }
+  };
+
+  const handleRegister = () => {
+    if (import.meta.env.VITE_APP_URL) {
+      window.location.href = import.meta.env.VITE_APP_URL + '?action=register';
+    } else {
+      onRegister();
+    }
+  };
+
   // Fallback plans if none provided or empty
   // We cast to any here because the fallback structure is slightly different for display purposes, 
   // or we should align it with Plan type. Let's align it with Plan type but use a helper for features.
@@ -104,6 +120,13 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart, onRegister, plans })
       if (f.payments) features.push('Выплаты');
     }
 
+    if (plan.machinePrice > 0) {
+      features.push(`+1 станок: ${plan.machinePrice} ₽/мес`);
+    }
+    if (plan.userPrice > 0) {
+      features.push(`+1 сотрудник: ${plan.userPrice} ₽/мес`);
+    }
+
     return features;
   };
 
@@ -194,7 +217,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart, onRegister, plans })
           </div>
 
           <button 
-            onClick={onStart}
+            onClick={handleStart}
             className="px-4 py-2 sm:px-6 sm:py-2.5 bg-slate-900 text-white rounded-full text-xs sm:text-sm font-bold hover:bg-slate-800 transition-all active:scale-95 shadow-xl dark:shadow-slate-900/20 shadow-slate-200"
           >
             Войти
@@ -219,7 +242,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart, onRegister, plans })
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center px-4 sm:px-0">
             <button 
-              onClick={onRegister}
+              onClick={handleRegister}
               className="w-full sm:w-auto px-8 sm:px-10 py-4 sm:py-5 bg-blue-600 text-white rounded-[2rem] font-black text-base sm:text-lg shadow-2xl dark:shadow-slate-900/40 shadow-blue-200 hover:bg-blue-700 transition-all hover:-translate-y-1 active:scale-95 uppercase tracking-wide"
             >
               Бесплатно и навсегда за 1 минуту
@@ -548,7 +571,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart, onRegister, plans })
                   ))}
                 </ul>
                 <button 
-                  onClick={onRegister} 
+                  onClick={handleRegister} 
                   className={buttonClasses}
                 >
                   {plan.price === 0 ? 'Начать бесплатно' : (plan.type === 'BUSINESS' ? 'Связаться с нами' : `Выбрать ${plan.name}`)}
@@ -588,7 +611,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart, onRegister, plans })
            <div className="text-center md:text-right">
               <p className="text-sm font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-4">Начните сегодня</p>
               <button 
-                onClick={onStart}
+                onClick={handleStart}
                 className="px-8 sm:px-10 py-3 sm:py-4 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-50 rounded-full font-black uppercase text-xs tracking-widest hover:bg-blue-500 dark:hover:bg-blue-600 hover:text-white transition-all shadow-2xl dark:shadow-slate-900/40 shadow-black/20"
               >
                 Запустить приложение

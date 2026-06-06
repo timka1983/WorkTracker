@@ -82,8 +82,8 @@ const EmployerLogin: React.FC<EmployerLoginProps> = ({ onBack, onSuccess }) => {
             console.warn('Failed to upsert user to database (might be RLS):', upsertErr);
           }
 
-          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(fallbackAdmin));
           localStorage.setItem(STORAGE_KEYS.TRUSTED_DEVICE, 'true');
+          localStorage.setItem(STORAGE_KEYS.LAST_USER_ID, fallbackAdmin.id);
           // Link session to user
           supabase.rpc('link_current_session_to_user', { target_user_id: fallbackAdmin.id });
         } else {
@@ -95,8 +95,8 @@ const EmployerLogin: React.FC<EmployerLoginProps> = ({ onBack, onSuccess }) => {
             isAdmin: userData.is_admin === true || userData.isAdmin === true || userData.id === 'admin' || userData.position === 'Администратор',
             organizationId: userData.organization_id || userData.organizationId
           };
-          localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(adminUser));
           localStorage.setItem(STORAGE_KEYS.TRUSTED_DEVICE, 'true');
+          localStorage.setItem(STORAGE_KEYS.LAST_USER_ID, adminUser.id);
           // Link session to user
           supabase.rpc('link_current_session_to_user', { target_user_id: adminUser.id });
         }

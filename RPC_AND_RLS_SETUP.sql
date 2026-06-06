@@ -7,6 +7,10 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS supabase_auth_id UUID;
 -- 2. Create the link_current_session_to_user function
 -- This function allows the current authenticated user (auth.uid()) 
 -- to link their session to a specific record in the 'users' table.
+-- We drop both possible overloads to resolve ambiguity (PGRST203)
+DROP FUNCTION IF EXISTS link_current_session_to_user(TEXT);
+DROP FUNCTION IF EXISTS link_current_session_to_user(UUID);
+
 CREATE OR REPLACE FUNCTION link_current_session_to_user(target_user_id TEXT)
 RETURNS VOID AS $$
 BEGIN

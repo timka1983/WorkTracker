@@ -19,7 +19,7 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
     email: '',
     password: '',
     adminName: '',
-    adminPin: '0000'
+    adminPin: '2026'
   });
   const [generatedOrgId, setGeneratedOrgId] = useState('');
 
@@ -59,15 +59,26 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
       }
 
       setGeneratedOrgId(orgId);
+      
+      // 2. Generate Contract Number
+      const allOrgs = await db.getAllOrganizations();
+      const orgCount = allOrgs ? allOrgs.length : 0;
+      const date = new Date();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      const contractNumber = `${orgCount + 1}-${month}/${year}`;
+      const contractDate = date.toISOString();
 
-      // 2. Create Organization
+      // 3. Create Organization
       const newOrg: Organization = {
         id: orgId,
         name: formData.orgName,
         email: formData.email,
         ownerId: 'admin',
         plan: PlanType.FREE,
-        status: 'active'
+        status: 'active',
+        contractNumber,
+        contractDate
       };
 
       await db.createOrganization(newOrg);
@@ -96,7 +107,12 @@ const RegistrationForm: React.FC<RegistrationFormProps> = ({ onSuccess, onBack }
 
       setStep('success');
     } catch (err: any) {
-      setError('Произошла ошибка при регистрации: ' + err.message);
+      console.error('Registration error:', err);
+      let userMessage = err.message || 'Произошла ошибка при регистрации';
+      if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
+        userMessage = 'Не удалось связаться с сервером. Проверьте интернет-соединение или отключите AdBlock.';
+      }
+      setError('Произошла ошибка при регистрации: ' + userMessage);
     } finally {
       setLoading(false);
     }

@@ -125,10 +125,13 @@ export const STORAGE_KEYS = {
   PROMO_CODES: 'timesheet_promo_codes',
   OFFLINE_QUEUE: 'timesheet_offline_queue',
   AUDIT_LOGS: 'timesheet_audit_logs',
-  TRUSTED_DEVICE: 'timesheet_trusted_device'
+  TRUSTED_DEVICE: 'timesheet_trusted_device',
+  ANALYTICS_EXPANDED: 'timesheet_analytics_expanded'
 };
 
-const savedLogs = localStorage.getItem(STORAGE_KEYS.WORK_LOGS);
+const savedLogs = typeof window !== 'undefined'
+  ? localStorage.getItem(STORAGE_KEYS.WORK_LOGS)
+  : null;
 
 // Генерация демо-данных за январь 2024
 const generateDemoLogs = (): WorkLog[] => {

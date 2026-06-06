@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+out.js
+fix_styles.cjs
+.env
+.env.local
+.env.production
+DEBUG_*.sql
+DISABLE_RLS*.sql
+TEST_*.sql

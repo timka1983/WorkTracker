@@ -142,6 +142,7 @@ export const MatrixView: React.FC<MatrixViewProps> = ({
                       filterMonth={filterMonth}
                       setEditingLog={setEditingLog}
                       roundShiftMinutes={currentOrg?.roundShiftMinutes}
+                      currentOrg={currentOrg}
                     />
                   </tr>
                 );

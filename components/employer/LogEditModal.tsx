@@ -1,6 +1,7 @@
 import React from 'react';
 import { WorkLog, User, Machine, EntryType } from '../../types';
 import { format } from 'date-fns';
+import { calculateNightShiftOverlap } from '../../utils';
 
 interface LogEditModalProps {
   editingLog: { userId: string; date: string };
@@ -11,9 +12,11 @@ interface LogEditModalProps {
   deleteLogItem: (id: string) => void;
   setPreviewPhoto: (photo: string | null) => void;
   formatTime: (dateStr: string) => string;
-  saveCorrection: (id: string, durationMinutes: number, fine?: number, bonus?: number, itemsProduced?: number) => void;
+  saveCorrection: (id: string, durationMinutes: number, fine?: number, bonus?: number, itemsProduced?: number, checkIn?: string, checkOut?: string, isNightShift?: boolean, machineId?: string | null) => void;
   tempNotes: Record<string, string>;
   setTempNotes: (notes: Record<string, string>) => void;
+  currentOrg: any; // Using any to avoid importing Organization if not needed, or we can import it
+  onAddManualLog?: (userId: string, date: string) => void;
 }
 
 export const LogEditModal: React.FC<LogEditModalProps> = ({
@@ -27,8 +30,12 @@ export const LogEditModal: React.FC<LogEditModalProps> = ({
   formatTime,
   saveCorrection,
   tempNotes,
-  setTempNotes
+  setTempNotes,
+  currentOrg,
+  onAddManualLog
 }) => {
+  const filteredLogs = logs.filter(l => l.userId === editingLog.userId && l.date === editingLog.date);
+
   return (
     <div className="fixed inset-0 z-[100] bg-slate-900/70 backdrop-blur-md flex items-center justify-center p-4">
       <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] w-full max-w-2xl shadow-2xl dark:shadow-slate-900/40 border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
@@ -41,7 +48,12 @@ export const LogEditModal: React.FC<LogEditModalProps> = ({
          </div>
          
          <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-slate-50/30 dark:bg-slate-900/30">
-            {logs.filter(l => l.userId === editingLog.userId && l.date === editingLog.date).map(log => (
+            {filteredLogs.length === 0 && (
+              <div className="text-center py-8">
+                <p className="text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4">Нет записей за этот день</p>
+              </div>
+            )}
+            {filteredLogs.map(log => (
               <div key={log.id} className="bg-white dark:bg-slate-900 rounded-[1.5rem] border border-slate-200 dark:border-slate-800 shadow-md dark:shadow-slate-900/20 p-5 space-y-4 relative group">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
                    <div className="flex items-center gap-3">
@@ -101,17 +113,88 @@ export const LogEditModal: React.FC<LogEditModalProps> = ({
                          </div>
                       </div>
                       
-                      <div className="grid grid-cols-2 gap-2 text-[10px] font-black text-slate-400 uppercase tracking-tighter">
-                         <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
-                            <span>Начало:</span> <span className="text-slate-900 dark:text-slate-50 ml-1">{log.checkIn ? formatTime(log.checkIn) : '--:--'}</span>
-                         </div>
-                         <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
-                            <span>Конец:</span> <span className="text-slate-900 dark:text-slate-50 ml-1">{log.checkOut ? formatTime(log.checkOut) : '--:--'}</span>
-                         </div>
-                      </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px] font-black text-slate-400 uppercase tracking-tighter">
+                           <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800 flex flex-col gap-1">
+                              <span>Начало:</span>
+                              <input 
+                                type="time" 
+                                defaultValue={log.checkIn ? formatTime(log.checkIn) : ''}
+                                onBlur={(e) => {
+                                  if (!log.checkIn || !e.target.value) return;
+                                  const date = new Date(log.checkIn);
+                                  const [h, m] = e.target.value.split(':').map(Number);
+                                  date.setHours(h, m, 0, 0);
+                                  
+                                  let isNightShift = log.isNightShift;
+                                  if (currentOrg?.autoNightShift && log.checkOut) {
+                                    const overlapMinutes = calculateNightShiftOverlap(date.toISOString(), log.checkOut, currentOrg.nightShiftStart, currentOrg.nightShiftEnd);
+                                    isNightShift = overlapMinutes >= 60;
+                                  }
+                                  
+                                  saveCorrection(log.id, log.durationMinutes, log.fine, log.bonus, log.itemsProduced, date.toISOString(), log.checkOut, isNightShift);
+                                }}
+                                className="bg-transparent border-none p-0 text-slate-900 dark:text-slate-50 font-black focus:ring-0 text-xs"
+                              />
+                           </div>
+                           <div className="bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800 flex flex-col gap-1">
+                              <span>Конец:</span>
+                              <input 
+                                type="time" 
+                                defaultValue={log.checkOut ? formatTime(log.checkOut) : ''}
+                                onBlur={(e) => {
+                                  if (!log.checkOut || !e.target.value) return;
+                                  const date = new Date(log.checkOut);
+                                  const [h, m] = e.target.value.split(':').map(Number);
+                                  date.setHours(h, m, 0, 0);
+                                  
+                                  let isNightShift = log.isNightShift;
+                                  if (currentOrg?.autoNightShift && log.checkIn) {
+                                    const overlapMinutes = calculateNightShiftOverlap(log.checkIn, date.toISOString(), currentOrg.nightShiftStart, currentOrg.nightShiftEnd);
+                                    isNightShift = overlapMinutes >= 60;
+                                  }
+                                  
+                                  saveCorrection(log.id, log.durationMinutes, log.fine, log.bonus, log.itemsProduced, log.checkIn, date.toISOString(), isNightShift);
+                                }}
+                                className="bg-transparent border-none p-0 text-slate-900 dark:text-slate-50 font-black focus:ring-0 text-xs"
+                              />
+                           </div>
+                        </div>
                    </div>
 
                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                         <div className="space-y-1">
+                            <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Оборудование</label>
+                            <select
+                              value={log.machineId || ''}
+                              onChange={(e) => saveCorrection(log.id, log.durationMinutes, log.fine, log.bonus, log.itemsProduced, log.checkIn, log.checkOut, log.isNightShift, e.target.value || null)}
+                              className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-black text-slate-900 dark:text-slate-50 outline-none focus:border-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all shadow-sm dark:shadow-none"
+                            >
+                              <option value="">Без оборудования (Работа)</option>
+                              {machines.map(m => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                              ))}
+                            </select>
+                         </div>
+                         <div className="space-y-1">
+                            <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Тип смены</label>
+                            <div className="flex items-center h-[36px] bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-xl px-1">
+                               <button
+                                 onClick={() => saveCorrection(log.id, log.durationMinutes, log.fine, log.bonus, log.itemsProduced, log.checkIn, log.checkOut, false, log.machineId)}
+                                 className={`flex-1 h-full rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${!log.isNightShift ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                               >
+                                 День
+                               </button>
+                               <button
+                                 onClick={() => saveCorrection(log.id, log.durationMinutes, log.fine, log.bonus, log.itemsProduced, log.checkIn, log.checkOut, true, log.machineId)}
+                                 className={`flex-1 h-full rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${log.isNightShift ? 'bg-slate-900 dark:bg-indigo-900 text-indigo-400 shadow-sm' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                               >
+                                 Ночь
+                               </button>
+                            </div>
+                         </div>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2">
                          <div className="space-y-1">
                             <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Минуты работы</label>
@@ -183,10 +266,18 @@ export const LogEditModal: React.FC<LogEditModalProps> = ({
             ))}
          </div>
          
-         <div className="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
+         <div className="p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex flex-col sm:flex-row gap-3">
+            {onAddManualLog && (
+              <button 
+                onClick={() => onAddManualLog(editingLog.userId, editingLog.date)} 
+                className="flex-1 py-4 bg-emerald-500 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg shadow-emerald-500/30 hover:bg-emerald-600 transition-all active:scale-95"
+              >
+                + Добавить смену
+              </button>
+            )}
             <button 
               onClick={() => { setEditingLog(null); setTempNotes({}); }} 
-              className="w-full py-4 bg-slate-900 dark:bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/20 shadow-slate-200 dark:shadow-none hover:bg-slate-800 dark:hover:bg-blue-700 transition-all active:scale-95"
+              className="flex-1 py-4 bg-slate-900 dark:bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-2xl dark:shadow-slate-900/20 shadow-slate-200 dark:shadow-none hover:bg-slate-800 dark:hover:bg-blue-700 transition-all active:scale-95"
             >
               Завершить редактирование
             </button>

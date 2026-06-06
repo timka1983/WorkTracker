@@ -1,7 +1,18 @@
-
 import { format, differenceInMinutes, eachDayOfInterval, endOfMonth, parseISO, startOfMonth } from 'date-fns';
 import { ru } from 'date-fns/locale/ru';
 import { WorkLog, User, EntryType, PositionConfig, PayrollConfig, Organization } from './types';
+import { SWNotificationOptions } from './types/notification-types';
+
+import { getTelegramUrl } from './lib/telegram';
+
+export const cleanValue = (val: any) => {
+  if (typeof val !== 'string') return val;
+  const trimmed = val.trim();
+  if (trimmed.length > 0 && !/[a-zA-Z0-9]/.test(trimmed[0])) {
+    return trimmed.replace(/^[^a-zA-Z0-9]+/, '');
+  }
+  return trimmed;
+};
 
 export const formatTime = (dateStr?: string) => {
   if (!dateStr) return '--:--';
@@ -39,6 +50,37 @@ export const applyRounding = (minutes: number, enabled?: boolean) => {
     return minutes - remainder;
   }
   return minutes;
+};
+
+export const calculateNightShiftOverlap = (checkIn: string, checkOut: string, nightShiftStart: string = '22:00', nightShiftEnd: string = '06:00') => {
+  const start = new Date(checkIn).getTime();
+  const end = new Date(checkOut).getTime();
+  let overlapMs = 0;
+  const [startHr, startMin] = nightShiftStart.split(':').map(Number);
+  const [endHr, endMin] = nightShiftEnd.split(':').map(Number);
+  
+  let currentDay = new Date(start);
+  currentDay.setHours(12, 0, 0, 0); 
+  const endDay = new Date(end);
+  endDay.setHours(12, 0, 0, 0);
+  
+  for (let d = new Date(currentDay.getTime() - 86400000); d.getTime() <= endDay.getTime() + 86400000; d = new Date(d.getTime() + 86400000)) {
+    const nightStart = new Date(d);
+    nightStart.setHours(startHr, startMin, 0, 0);
+    const nightEnd = new Date(d);
+    if (endHr < startHr || (endHr === startHr && endMin < startMin)) {
+      nightEnd.setDate(nightEnd.getDate() + 1);
+    }
+    nightEnd.setHours(endHr, endMin, 0, 0);
+    
+    const overlapStart = Math.max(start, nightStart.getTime());
+    const overlapEnd = Math.min(end, nightEnd.getTime());
+    
+    if (overlapEnd > overlapStart) {
+      overlapMs += (overlapEnd - overlapStart);
+    }
+  }
+  return overlapMs / (1000 * 60);
 };
 
 export const getDaysInMonthArray = (monthStr: string) => {
@@ -86,35 +128,86 @@ export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2
   return d;
 };
 
-export const sendNotification = (title: string, body: string) => {
+export const sendNotification = async (title: string, body: string, options?: {
+  tag?: string;
+  url?: string;
+  icon?: string;
+}) => {
   if (!('Notification' in window)) return;
-  
-  if (Notification.permission === 'granted') {
+
+  // Запрашиваем разрешение если ещё не дано
+  if (Notification.permission === 'default') {
+    await Notification.requestPermission();
+  }
+
+  if (Notification.permission !== 'granted') return;
+
+  try {
+    // Всегда используем Service Worker — работает когда приложение свёрнуто
+    const reg = await navigator.serviceWorker.ready;
+    const swOptions: SWNotificationOptions = {
+      body,
+      icon: options?.icon || '/icons/icon-192.png',
+      badge: '/icons/badge-72.png',
+      tag: options?.tag || 'worktracker-default',
+      renotify: true,
+      data: { url: options?.url || '/' },
+    };
+    await reg.showNotification(title, swOptions);
+  } catch (err) {
+    // Фоллбэк для браузеров без полной SW-поддержки
+    console.warn('SW notification failed, fallback:', err);
     try {
-      // Try standard constructor first (works on desktop)
-      new Notification(title, { body, icon: '/manifest.json' });
+      new Notification(title, { body, icon: '/icons/icon-192.png' });
     } catch (e) {
-      // Fallback for mobile devices (especially Android/Chrome)
-      if (navigator.serviceWorker) {
-        navigator.serviceWorker.ready.then(registration => {
-          registration.showNotification(title, { body, icon: '/manifest.json' });
-        }).catch(err => console.error('ServiceWorker notification failed:', err));
-      }
+      console.error('Notification fallback failed:', e);
     }
   }
 };
 
-const telegramQueue: { botToken: string, chatId: string, message: string }[] = [];
-let isProcessing = false;
-
-const processQueue = async () => {
-  if (isProcessing || telegramQueue.length === 0) return;
-  isProcessing = true;
-  
-  const { botToken, chatId, message } = telegramQueue.shift()!;
+export const sendMaxNotification = async (
+  botToken: string,
+  chatId: string,
+  message: string
+) => {
+  if (!botToken || !chatId) return;
   
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(`https://api.max.ru/v1/bot/${botToken}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: 'HTML'
+      })
+    });
+    clearTimeout(timeoutId);
+    
+    const data = await response.json();
+    if (!data.ok) {
+      throw new Error(`Max API error: ${data.description}`);
+    }
+  } catch (e) {
+    console.error('Failed to send Max notification:', e);
+  }
+};
+
+export const sendTelegramNotification = async (
+  botToken: string,
+  chatId: string,
+  message: string,
+  enabled: boolean = true
+) => {
+  if (!enabled || !botToken || !chatId) return;
+
+  try {
+    const url = getTelegramUrl(botToken, 'sendMessage');
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -123,29 +216,15 @@ const processQueue = async () => {
         parse_mode: 'HTML'
       })
     });
-  } catch (e: any) {
-    if (e.message === 'Failed to fetch') {
-      console.error('Ошибка сети: Не удалось подключиться к Telegram API. Проверьте подключение к интернету.');
-    } else {
-      console.error('Failed to send Telegram notification:', e);
+    const data = await response.json();
+    if (!data.ok) {
+      throw new Error(data.description || 'Telegram API error');
     }
-  } finally {
-    isProcessing = false;
-    // Small delay to prevent hitting API limits too quickly
-    setTimeout(processQueue, 500);
+  } catch (e) {
+    console.error('Failed to send Telegram notification:', e);
   }
 };
-
-export const sendTelegramNotification = async (
-  botToken: string,
-  chatId: string,
-  message: string
-) => {
-  if (!botToken || !chatId) return;
-  telegramQueue.push({ botToken, chatId, message });
-  processQueue();
-};
-
+   
 export const getEffectivePayrollConfig = (user: User, positions: PositionConfig[]) => {
   const positionConfig = positions.find(p => p.name === user.position);
   const baseConfig = positionConfig?.payroll || {
