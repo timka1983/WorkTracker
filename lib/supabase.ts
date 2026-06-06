@@ -28,21 +28,18 @@ const RAW_SUPABASE_URL = getEnv('VITE_SUPABASE_URL').trim() || 'https://placehol
 const SUPABASE_ANON_KEY = getEnv('VITE_SUPABASE_ANON_KEY').trim() || getEnv('VITE_SUPABASE_PUBLISHABLE_KEY').trim() || 'placeholder-anon-key';
 
 // Use proxy in browser to bypass potential blocking
-let SUPABASE_URL = RAW_SUPABASE_URL;
-if (typeof window !== 'undefined') {
-  // In the browser, we can use our own server as a proxy for Supabase
-  // This helps when the direct supabase.co domain is blocked
-  // We check local storage first for settings
-  const useProxySetting = localStorage.getItem('use_supabase_proxy');
-  
-  // Default to false for proxy unless specifically enabled
-  if (useProxySetting === 'true') {
-    SUPABASE_URL = window.location.origin + '/api/supabase-proxy';
-    console.log('🔄 Using Supabase Proxy:', SUPABASE_URL);
-  } else {
-    console.log('🌐 Using Direct Supabase connection:', SUPABASE_URL);
+function resolveSupabaseUrl(): string {
+  if (typeof window === 'undefined') return RAW_SUPABASE_URL;
+  if (localStorage.getItem('use_supabase_proxy') === 'true') {
+    const proxyUrl = `${window.location.origin}/api/supabase-proxy`;
+    console.log('🔄 Using Supabase Proxy:', proxyUrl);
+    return proxyUrl;
   }
+  console.log('🌐 Using Direct Supabase connection:', RAW_SUPABASE_URL);
+  return RAW_SUPABASE_URL;
 }
+
+let SUPABASE_URL = resolveSupabaseUrl();
 const APP_SECRET = getEnv('VITE_APP_SECRET') || 'change-me-in-env';
 
 // Debug logging for configuration
@@ -3536,3 +3533,19 @@ $$;
     return { error };
   }
 };
+deleteChatMessage: async (messageId: string, adminId: string) => {
+    if (!checkConfig()) return { error: 'Not configured' };
+    const { error } = await supabase.from('chat_messages').update({
+      is_deleted: true,
+      deleted_by: adminId,
+      deleted_at: new Date().toISOString()
+    }).eq('id', messageId);
+    return { error };
+  }
+};                          // ← строка 3538, конец объекта db
+
+// вот сюда добавляешь:
+export const testSupabaseConnection = async () => {
+  const via = typeof window !== 'undefined' &&
+    localStorage.getItem('use_supabase_proxy') === 'true' ? 'proxy' : 'direct';
+  const start = Date.now();

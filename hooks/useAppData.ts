@@ -165,13 +165,13 @@ export const useAppData = (currentUser: User | null) => {
         }
         // Check expiry
         const isExpired = org.expiryDate && new Date(org.expiryDate) < new Date();
-        if (isExpired && (org.status !== 'expired' || org.extraMachines > 0 || org.extraUsers > 0)) {
+        if (isExpired && (org.status !== 'expired' || (org.extraMachines || 0) > 0 || (org.extraUsers || 0) > 0)) {
           if (org.plan === PlanType.FREE) {
             org.status = 'active';
             org.extraMachines = 0;
             org.extraUsers = 0;
             org.expiryDate = undefined;
-            await db.updateOrganization(orgId, { status: 'active', extraMachines: 0, extraUsers: 0, expiryDate: null });
+            await db.updateOrganization(orgId, { status: 'active', extraMachines: 0, extraUsers: 0, expiryDate: undefined });
           } else {
             org.status = 'expired';
             org.plan = PlanType.FREE;
@@ -1431,7 +1431,7 @@ export const useAppData = (currentUser: User | null) => {
     
     if (duplicates.length > 0) {
       message += `\nНАЙДЕНЫ ДУБЛИКАТЫ СОТРУДНИКОВ (${duplicates.length}):\n`;
-      duplicates.forEach(d => {
+      duplicates.forEach((d: any) => {
         message += `- ${d.name}: ID [${d.users.map((u: any) => u.id).join(', ')}]\n`;
       });
     } else {
@@ -1440,7 +1440,7 @@ export const useAppData = (currentUser: User | null) => {
 
     if (machineDuplicates.length > 0) {
       message += `\nНАЙДЕНЫ ДУБЛИКАТЫ СТАНКОВ (${machineDuplicates.length}):\n`;
-      machineDuplicates.forEach(d => {
+      machineDuplicates.forEach((d: any) => {
         message += `- ${d.name}: ${d.count} шт.\n`;
       });
       message += '\nРешение: Используйте кнопку "Объединить дубликаты" для исправления.\n';

@@ -615,7 +615,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                      if (currentOrg) {
                         const updatedOrg = { ...currentOrg, theme: theme.id as any };
                         onUpdateOrg(updatedOrg);
-                        db.updateOrganization(currentOrg.id, { theme: theme.id });
+                        db.updateOrganization(currentOrg.id, { theme: theme.id as any });
                      }
                   }}
                   className={`p-4 rounded-2xl border-2 transition-all text-left group relative overflow-hidden ${

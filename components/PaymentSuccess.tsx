@@ -48,7 +48,7 @@ export const PaymentSuccess: React.FC = () => {
               const orgPromise = db.getOrganization(orgId).then(org => {
                 if (!org) throw new Error('Organization not found');
                 return db.updateOrganization(orgId, {
-                  plan: planType,
+                  plan: planType as PlanType,
                   expiryDate: new Date(Date.now() + termMonths * 30 * 24 * 60 * 60 * 1000).toISOString(),
                   status: 'active',
                   extraMachines: (org.extraMachines || 0) + extraMachines,
