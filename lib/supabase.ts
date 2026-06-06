@@ -3533,19 +3533,30 @@ $$;
     return { error };
   }
 };
-deleteChatMessage: async (messageId: string, adminId: string) => {
-    if (!checkConfig()) return { error: 'Not configured' };
-    const { error } = await supabase.from('chat_messages').update({
-      is_deleted: true,
-      deleted_by: adminId,
-      deleted_at: new Date().toISOString()
-    }).eq('id', messageId);
-    return { error };
-  }
-};                          // ← строка 3538, конец объекта db
+
 
 // вот сюда добавляешь:
 export const testSupabaseConnection = async () => {
   const via = typeof window !== 'undefined' &&
     localStorage.getItem('use_supabase_proxy') === 'true' ? 'proxy' : 'direct';
   const start = Date.now();
+  try {
+    const { data, error } = await supabase.from('organizations').select('id').limit(1);
+    const duration = Date.now() - start;
+    return { 
+      success: !error, 
+      error: error?.message, 
+      via, 
+      duration,
+      projectUrl: SUPABASE_URL 
+    };
+  } catch (e: any) {
+    return { 
+      success: false, 
+      error: e.message, 
+      via, 
+      duration: Date.now() - start,
+      projectUrl: SUPABASE_URL 
+    };
+  }
+};
